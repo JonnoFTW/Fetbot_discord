@@ -1,14 +1,14 @@
 #!/usr/bin/env python3
+#from opennsfw.classify_nsfw_new import check_img, get_model
+import sys
 import asyncio
 import csv
-import html
 import json
 import logging
 import os
 import pickle
 import random
 import re
-import sqlite3
 import sqlite3
 import string
 import subprocess
@@ -22,10 +22,10 @@ from itertools import cycle
 from pathlib import Path
 from urllib.parse import urlparse
 
-import cv2
 import discord
+import ngrok
 import humanize
-import imageio
+import aiohttp
 import matplotlib.dates as mdates
 import matplotlib.pylab as plt
 import numpy as np
@@ -33,12 +33,9 @@ import pandas as pd
 import pytz
 import requests
 import seaborn as sns
-import syllables
-import tabulate
-import tensorflow as tf
 import twitter
-import vapeplot
 import yaml
+import syllapy
 from PIL import Image, ImageFont, ImageDraw, ImageFilter
 from colormath.color_conversions import convert_color
 from colormath.color_diff import delta_e_cie2000
@@ -47,17 +44,20 @@ from discord.ext import commands
 from emoji import get_emoji_regexp, emojize
 from matplotlib import font_manager
 from nltk.metrics import distance
-from pygifsicle import optimize
 from sklearn.cluster import KMeans
 from urlextract import URLExtract
 from valve import rcon
 
-tf.get_logger().setLevel(logging.ERROR)
-tf.autograph.set_verbosity(3)
-from opennsfw.classify_nsfw_new import check_img, get_model
+
+do_nsfw_check = False
+poster_chance = 0.02
+if do_nsfw_check:
+    tf.get_logger().setLevel(logging.ERROR)
+    tf.autograph.set_verbosity(3)
+    nsfw_model = get_model()
 
 """
-Run with: 
+Run with:
 ~/markov-discord$ TF_CPP_MIN_LOG_LEVEL=3 PYTHONPATH=~/opennsfw ./fetbot.py
 
 """
@@ -69,9 +69,9 @@ intents.members = True
 bot = commands.Bot(command_prefix='.', intents=intents)
 jokes = json.loads(Path('jokes.json').read_text())
 data_store = 'data.json'
-nsfw_model = get_model()
 lock = asyncio.Lock()
-USER_AGENT = {'User-Agent': 'Mozilla/5.0 (X11; Fedora; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/90.0.4430.212 Safari/537.36'}
+USER_AGENT = {
+    'User-Agent': 'Mozilla/5.0 (X11; Fedora; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/90.0.4430.212 Safari/537.36'}
 
 api = twitter.Api(
     key_store['consumer_key'],
@@ -154,6 +154,7 @@ async def on_ready():
     print(f"Logged on")
     await bot.change_presence(activity=discord.Game(name="Cock/Ball Torture"))
     bot.loop.create_task(status_task())
+    bot.loop.create_task(dall_e_task())
 
 
 @bot.command()
@@ -187,7 +188,7 @@ async def add_fetish(ctx, *args):
 @bot.command(prefix='')
 async def asl(ctx):
     """a/s/l"""
-    places = ['sa', 'hawaii', 'israel', 'nigeria', 'aus', 'cali', 'nyc', 'nsw',
+    places = ['sa', 'hawaii', 'israel', 'nigeria', 'aus', 'cali', 'nyc', 'nsw', 'vic',
               'fl', 'uk', 'france', 'russia', 'germany', 'japan', 'china', 'nz', 'uganda']
     await ctx.send('/'.join([str(np.random.randint(8, 30)), random.choice(['m', 'f']), random.choice(places)]))
 
@@ -195,7 +196,7 @@ async def asl(ctx):
 @bot.command()
 async def flip(ctx):
     """Flip a coin"""
-    await ctx.send(f"A coin is flipped: {random.choice(['head', 'tail'])}")
+    await ctx.send(f"A coin is flipped: {random.choice(['heads', 'tails'])}")
 
 
 @bot.command()
@@ -293,7 +294,7 @@ async def set_kink(ctx):
     Doesn't do anything
     """
     msg = await ctx.bot.get_channel(570223709022060547).fetch_message(570432571591360532)
-    await msg.add_reaction('👺')
+    await msg.add_reaction(emoji='👺')
 
 
 #  for reaction in msg.reactions:
@@ -383,7 +384,8 @@ async def bomold(ctx):
 @bot.command()
 async def bom(ctx):
     prefix = "http://www.bom.gov.au/products/radar_transparencies/"
-    fnames = ["IDR.legend.0.png", "IDR643.background.png", "IDR643.topography.png", "IDR643.range.png", "IDR643.locations.png"]
+    fnames = ["IDR.legend.0.png", "IDR643.background.png",
+              "IDR643.topography.png", "IDR643.range.png", "IDR643.locations.png"]
     out_name = 'radar_animated.gif'
     async with ctx.typing():
         image = None
@@ -419,13 +421,15 @@ async def bom(ctx):
                 mask = Image.open(str(p)).convert("RGBA")
                 for cover in [mask, range_cover, location_cover]:
                     new_frame.paste(cover, (0, 0), cover)
-                frame_time = datetime.strptime(f.split('.')[2] + '+0000', '%Y%m%d%H%M%z').astimezone(pytz.timezone('Australia/Adelaide'))
+                frame_time = datetime.strptime(f.split(
+                    '.')[2] + '+0000', '%Y%m%d%H%M%z').astimezone(pytz.timezone('Australia/Adelaide'))
                 draw = ImageDraw.Draw(new_frame)
                 text = frame_time.strftime('%b %d %I:%M %p')
                 w, h = font.getsize(text)
                 x, y = 125, 500
                 m = 4
-                draw.rounded_rectangle((x - m, y - m, x + w + m, y + h + m), fill=(0, 0, 0, 168), radius=7)
+                draw.rounded_rectangle(
+                    (x - m, y - m, x + w + m, y + h + m), fill=(0, 0, 0, 168), radius=7)
                 draw.text((x, y), text, fill=(255, 255, 255), font=font)
                 images.append(new_frame)
                 # p.unlink()
@@ -468,6 +472,9 @@ async def find(ctx):
     Find your most compatible kinkster
     """
     data = await get_db()
+    if 570226229379072020 in [r.id for r in ctx.author.roles]:
+        await ctx.send("18+ only")
+        return
     if len(data) <= 1:
         await ctx.send("There's nobody else to compare yourself to")
         return
@@ -476,10 +483,13 @@ async def find(ctx):
             (
                 iou(data.get(str(ctx.author.id), tuple()),
                     data.get(str(other), tuple())), other
-            ) for other in data.keys() if other != str(ctx.author.id) and other.isdigit()
+            ) for other in data.keys() if other != str(ctx.author.id) and other.isdigit() and ctx.message.guild.get_member(int(other))
         ], reverse=True)
     )
-    await ctx.send(f"{ctx.author.mention} your best match is <@{score[1]}> with score {round(score[0], 3)}")
+    if score[0] == 0:
+        await ctx.send(f"You have no match with anyone. Try using .add <fetish name>")
+    else:
+        await ctx.send(f"{ctx.author.mention} your best match is <@{score[1]}> with score {round(score[0], 3)}")
 
 
 @bot.command()
@@ -510,7 +520,8 @@ async def dump(ctx, status='old'):
             print(f"\tDumping {channel}")
             chan_messages = await channel.history(limit=5000000, oldest_first=True, after=last_date).flatten()
             with open(fname, 'a') as out_file:
-                writer = csv.DictWriter(out_file, fieldnames=['timestamp', 'channel', 'author', 'msg'])
+                writer = csv.DictWriter(out_file, fieldnames=[
+                                        'timestamp', 'channel', 'author', 'msg'])
                 for m in chan_messages:
                     meta['channels'][m.channel.id] = m.channel.name
                     if hasattr(m.author, 'nick') and m.author.nick is not None:
@@ -554,20 +565,7 @@ async def weather(ctx, site="Adelaide"):
     """
     Weather details for adelaide
     """
-    url = "http://reg.bom.gov.au/fwo/IDS60901/IDS60901.94648.json"
-    o = requests.get(url).json()['observations']['data'][0]
-    out = {
-        #            'City': o['name'],
-        'Temp(°C)': o['air_temp'],
-        'Wind(km/h)': o['wind_spd_kmh'],
-        'Rain(mm)': o['rain_trace'],
-        'Humidity(%)': o['rel_hum'],
-        'Wind Dir': o['wind_dir'],
-        'Visibility(km)': o['vis_km'],
-        'Updated': o['local_date_time']
-    }
     #    await ctx.send("```"+tabulate.tabulate(out, headers='keys', tablefmt='plain')+"```")
-
     sites = {
         "Adelaide": "94648",
         "Adelaide Airport": "94672",
@@ -634,16 +632,33 @@ async def weather(ctx, site="Adelaide"):
         "Yunta": "94684"
     }
     lower_sites = {k.lower(): v for k, v in sites.items()}
+    ids_id = "60801"
     if site.lower() in lower_sites:
         site_id = lower_sites[site.lower()]
+        print("site", site, site_id)
     else:
-        suggestions = [k for k in sites.keys() if distance.edit_distance(site, k) < 3]
+        suggestions = [k for k in sites.keys(
+        ) if distance.edit_distance(site, k) < 3]
         await ctx.send(f"No such site exists. Perhaps you meant: {', '.join(suggestions)}")
         return
+
+    url = f"http://www.bom.gov.au/fwo/IDS{ids_id}/IDS{ids_id}.{site_id}.json"
+    o = requests.get(url, headers=USER_AGENT).json()['observations']['data'][0]
+    out = {
+        #            'City': o['name'],
+        'Temp(°C)': o['air_temp'],
+        'Wind(km/h)': o['wind_spd_kmh'],
+        'Rain(mm)': o['rain_trace'],
+        'Humidity(%)': o['rel_hum'],
+        'Wind Dir': o['wind_dir'],
+        #'Visibility(km)': o['vis_km'],
+        'Updated': o['local_date_time']
+    }
+
     embed = discord.Embed(
         title=o['name'],
         colour=0x006064,
-        url=f"http://www.bom.gov.au/products/IDS60901/IDS60901.{site_id}.shtml"
+        url=f"http://www.bom.gov.au/products/IDS{ids_id}/IDS{ids_id}.{site_id}.shtml"
     )
     # img = requests.get("http://www.bom.gov.au/radar/IDR643.gif", headers=USER_AGENT).content
     # print(f"Received {len(img)} bytes image")
@@ -665,7 +680,7 @@ async def temps(ctx, field='air_temp', other_field=None):
     """
     fields = {
         "wind_spd_kmh": "Wind Speed (km/h)",
-        "vis_km": "Visibility (km)",
+        # "vis_km": "Visibility (km)",
         "rel_hum": "Relative Humidity (%)",
         "press": "Pressure (hPa)",
         "dewpt": "Dew Point (°C)",
@@ -686,7 +701,7 @@ async def temps(ctx, field='air_temp', other_field=None):
 
         df = pd.DataFrame(data)
         df['rain_trace'] = pd.to_numeric(df['rain_trace'])
-        df['vis_km'] = pd.to_numeric(df['vis_km'])
+        # df['vis_km'] = pd.to_numeric(df['vis_km'])
         df.set_index(pd.to_datetime(df['local_date_time_full']), inplace=True)
 
         ax = df[field].plot(label=fields[field])
@@ -795,16 +810,17 @@ def get_colour_dist(im, y_start, ts, x_start=16):
 
 @bot.command()
 async def permcheck(ctx):
-    print("\n".join(str(x) for x in ctx.message.channel.guild.me.guild_permissions))
+    print("\n".join(str(x)
+                    for x in ctx.message.channel.guild.me.guild_permissions))
 
 
 @bot.command(name='poster')
 # @commands.has_role("Admin")
-async def poster(ctx, arg1="", arg2="", arg3=""):
+async def poster(ctx, arg1="", arg2="", arg3="", *args):
     """
     Generate a cool posters. Use quote marks to separate lines eg: .poster "first line" "" "third line"
     """
-    print(f"poster args= '{arg1}' '{arg2}' '{arg3}' ")
+    print(f"poster args= '{arg1}' '{arg2}' '{arg3}' {args} ")
     async with ctx.typing():
         mentions = {}
         try:
@@ -834,20 +850,23 @@ async def poster(ctx, arg1="", arg2="", arg3=""):
             fonta, ts = fit_text(
                 arg1, draw, np.random.choice(fonts), basewidth, 106)
             y_start = 16
+            #draw.rectangle([16-4, y_start-4, ts[0]+16, ts[1]+4], fill=bg_col)
             draw.text((16, y_start), arg1, get_colour_dist(
-                im, y_start, ts), font=fonta)
+                im, y_start, ts), font=fonta, stroke_width=3, stroke_fill="white")
         if arg2:
             fontb, ts = fit_text(
                 arg2, draw, np.random.choice(fonts), basewidth, 96)
             y_start = im.size[1] / 2 - 12
+            #draw.rectangle([16-4, y_start-4, ts[0]+4, ts[1]+4], fill=bg_col)
             draw.text((16, y_start), arg2, get_colour_dist(
-                im, y_start, ts), font=fontb)
+                im, y_start, ts), font=fontb, stroke_width=3, stroke_fill="black")
         if arg3:
             fontc, ts = fit_text(
                 arg3, draw, np.random.choice(fonts), basewidth, 76)
             y_start = im.size[1] - 128
+            #draw.rectangle([16-4, y_start-4, ts[0]+4, ts[1]+4], fill=bg_col)
             draw.text((16, y_start), arg3, get_colour_dist(
-                im, y_start, ts), font=fontc)
+                im, y_start, ts), font=fontc, stroke_width=3, stroke_fill="black")
 
         buff = BytesIO()
         im.save(buff, format='png', quality=95)
@@ -855,6 +874,9 @@ async def poster(ctx, arg1="", arg2="", arg3=""):
         fname = f'poster_{time.time()}.png'
         file = discord.File(buff, filename=fname)
         embed = discord.Embed()
+        if check_haiku(" ".join([arg1, arg2, arg3])):
+            embed.title = "Haiku"
+            embed.description = ctx.message.author.mention
         embed.set_image(url=f'attachment://{fname}')
         await ctx.send(file=file, embed=embed)
 
@@ -894,7 +916,8 @@ async def now_playing(ctx, user=''):
         try:
             link = song['image'][2]['#text']
             print("link=", link, song['image'])
-            im_data = requests.get(('http://' if not link.startswith('http') else '') + song['image'][2]['#text']).content
+            im_data = requests.get(
+                ('http://' if not link.startswith('http') else '') + song['image'][2]['#text']).content
             buff = BytesIO(im_data)
             file = discord.File(buff, filename="cover.jpg")
             embed = discord.Embed()
@@ -967,7 +990,7 @@ async def players(ctx):
     await ctx.send("**[SM]** Players: " + players)
 
 
-@bot.command()
+@bot.command(aliases=['profile'])
 async def statsme(ctx):
     await ctx.send(f"{ctx.author.mention} User stats http://45.248.76.3:5000/u/{ctx.author.id}")
 
@@ -1010,7 +1033,8 @@ async def thetime(ctx):
 @bot.command(name='time')
 async def timeleft(ctx):
     tz = pytz.timezone("Australia/Adelaide")
-    mins = ((datetime.now().astimezone(tz) + timedelta(days=1)).replace(hour=0, minute=0, second=0) - datetime.now().astimezone(tz)).total_seconds() / 60
+    mins = ((datetime.now().astimezone(tz) + timedelta(days=1)).replace(hour=0,
+                                                                        minute=0, second=0) - datetime.now().astimezone(tz)).total_seconds() / 60
     await ctx.send(f'There are {int(mins)} minutes left in the day')
 
 
@@ -1040,6 +1064,71 @@ def chunkIt(seq, num):
         last += avg
 
     return out
+
+@bot.command()
+async def syllables(ctx, word):
+    await ctx.send(f"{word} has {syllapy.count(word)} syllables")
+
+dall_e_queue = asyncio.Queue()
+
+def get_dall_ep():
+    client = ngrok.Client(key_store['ngrok'])
+    for tn in client.tunnels.list():
+        if tn.metadata == "dall-e":
+            return tn.public_url
+    return None
+async def dall_e_task():
+    while True:
+        ctx, msg, ep = await dall_e_queue.get()
+        async with aiohttp.ClientSession() as session:
+            async with session.get(f'{ep}/img.jpg', params={'q': msg}) as resp:
+                if resp.status == 200:
+                    buff = BytesIO(await resp.read())
+                    fname = "dalle.jpg"
+                    buff.seek(0)
+                    file = discord.File(buff, filename=fname)
+                    embed = discord.Embed()
+                    embed.set_image(url=f'attachment://{fname}')
+                    embed.description = f"{ctx.message.author.mention}: {msg}"
+                    await ctx.send(file=file, embed=embed)
+                else:
+                    resp_text = await resp.text()
+                    await ctx.send(f"Dall-e service returned error ({resp.status}): {resp_text}")
+                
+                dall_e_queue.task_done()
+        
+@bot.command()
+async def dalle(ctx, *, msg):
+    # put the message in the queue
+    if not msg:
+        await ctx.send("You must provide a prompt")
+        return
+    endpoint = get_dall_ep()
+    if not endpoint:
+        await ctx.send("dall-e is not running")
+        return
+    dall_e_queue.put_nowait((ctx, msg, endpoint))
+    
+
+
+@bot.command()
+async def ud(ctx, word, pos=0):
+    async with ctx.typing():
+        res = requests.get("https://api.urbandictionary.com/v0/define", params={'term': word})
+        data = res.json()["list"]
+        try:
+            entry = data[pos]
+            # await ctx.send(f"UrbanDictionary definition of {word}: {entry['definition']}\n👍{entry['thumbs_up']}👎{entry['thumbs_down']} {entry['permalink']}")
+            embed = discord.Embed(
+                title=entry['word'],
+                colour=0x006064,
+                url=entry['permalink'],
+            )
+            embed.add_field(name=f"**Definition**", value=entry['definition'])
+            embed.set_footer(text=f"👍{entry['thumbs_up']}👎{entry['thumbs_down']}")
+            await ctx.send(embed=embed)
+        except IndexError:
+            await ctx.send("No definition at that position")
 
 
 @bot.command(name='cleanup')
@@ -1117,10 +1206,36 @@ async def handle_bot_mention(message):
                                                                                  "Hold me :pleading_face:", "I love you so much :smiling_face_with_3_hearts:", "You make me feel special inside",
                                                                                  "You deserve to be loved and respected", "I love and respect you very much", "You are capable of more than you know"]))
 
+def check_haiku(message):
+    # count the syllables and check if the message is a haiku
+    poem = message.content if hasattr(message, 'content') else message
+    parts = [(syllapy.count(x),x) for x in re.sub(r'[^\w \n\t]', '', poem).split()]
+    # read until we have 5 then 7 then 5
+    # pop parts,
+    first_line, second_line, third_line = 0, 0, 0
+    top_line, middle_line, bottom_line = [], [], []
+    try:
+        while first_line != 5:
+            cnt, wrd = parts.pop(0)
+            first_line += cnt
+            top_line.append(wrd)
+        while second_line != 7:
+            cnt, wrd = parts.pop(0)
+            second_line += cnt
+            middle_line.append(wrd)
+        while third_line != 5:
+            cnt, wrd = parts.pop(0)
+            third_line += cnt
+            bottom_line.append(wrd)
+        if len(parts) == 0:
+            return [' '.join(x) for x in (top_line, middle_line, bottom_line)]
+    except:
+        return False
+    
 
 @bot.event
 async def on_member_join(member):
-    await member.guild.get_channel(570216721512792105).send(f'{member.mention}: please remember that asking (including sending DMs) for drugs or links to drug servers will result in an instant ban')
+    await member.guild.get_channel(570216721512792105).send(f'{member.mention}: please remember that asking (including sending DMs) for drugs or links to underground drug servers will result in an instant ban')
 
 
 @bot.event
@@ -1139,10 +1254,12 @@ async def on_message(message):
             'msg': message.content
         }
         with open('log.csv', 'a') as out_file:
-            writer = csv.DictWriter(out_file, fieldnames=['timestamp', 'channel', 'author', 'msg'])
+            writer = csv.DictWriter(out_file, fieldnames=[
+                                    'timestamp', 'channel', 'author', 'msg'])
             writer.writerow(row_dict)
         try:
-            res = requests.post("http://localhost:5000/update", json=[row_dict])
+            res = requests.post(
+                "http://localhost:5000/update", json=[row_dict])
             # print(f"Updating chanstat: ", res.status_code)
         except Exception as e:
             print(e)
@@ -1151,15 +1268,18 @@ async def on_message(message):
     with open('log.txt', 'a') as out_log:
         out_log.write(log_msg)
         out_log.write("\n")
+    if message.author == bot.user:
+        return
     if message.author.id == 897853931043037205 and message.channel.id == 570216721512792105:
         await message.delete()
     if message.channel.id == 570213862285115393 and len(message.author.roles) == 1:
         await message.delete()
         return
-    if "drug" in message.content.lower() and any(x in message.content.lower().translate(str.maketrans(dict.fromkeys(string.punctuation))).split() for x in ["link", "server"]):
+    mcl = message.content.lower()
+    if any(x in mcl for x in ("drug", "underground")) and any(x in mcl for x in ("link", "server")):
         await message.add_reaction("<:brainlet:736521294144602113>")
         await message.reply('Asking for links to drug servers is a bannable offense')
-    if any(x in re.sub(r'[\W_]', '', message.content) for x in ["mynudesforfree", "videoswithyouforfree", "wanttoseemynudes", "sharemyhotpic"]):
+    if any(x in re.sub(r'[\W_]', '', mcl) for x in ["mynudesforfree", "videoswithyouforfree", "wanttoseemynudes", "sharemyhotpic"]):
         try:
             await message.delete()
         except:
@@ -1171,12 +1291,13 @@ async def on_message(message):
             print("failed to kick", message.author)
         return
     urls = []
-    image_types = ("image/jpeg", "image/png", "video/mp4", "video/webm", "image/gif")
-    for url in URLExtract().find_urls(message.content):
-        response = requests.head(url)
-        if response.headers['Content-Type'] in image_types and int(response.headers['Content-Length']) < 10485760:
-            urls.append(discord.Embed(url=url, type="image"))
-    if message.attachments or message.embeds or urls:
+    image_types = ("image/jpeg", "image/png",
+                   "video/mp4", "video/webm", "image/gif")
+    #for url in URLExtract().find_urls(message.content):
+    #    response = requests.head(url)
+    #    if response.headers['Content-Type'] in image_types and int(response.headers['Content-Length']) < 10485760:
+    #        urls.append(discord.Embed(url=url, type="image"))      
+    if do_nsfw_check and (message.attachments or message.embeds or urls):
         images = []  # list of filenames to check
         for attachment in message.attachments:
             # print("Message has attachment", attachment)
@@ -1215,30 +1336,22 @@ async def on_message(message):
     if 618425432487886879 in message.raw_mentions:
         await handle_bot_mention(message)
         return
-    if message.content.lower().strip() == "ff":
+
+    if mcl.strip() == "ff":
         await message.channel.send("**[SM] Friendly fire is disabled.**")
         return
     if _spelling():
-        for word in [x.lower() for x in message.content.split()]:
+        for word in mcl.split():
             if word in _mistakes:
                 await message.channel.send(f"{message.author.mention} it's spelt '{_mistakes[word]}'")
-    """
-    # count the syllables and check if the message  is a haiku
-    parts = [(syllables.estimate(x),x) for x in message.content.split()]
-    # read until we have 5 then 7 then 5
-    is_haiku = False
-    lines = []
-    s,total = [],0
-    for word in parts:
-        total += word[0]
-        s.append(word[1])
-        if (len(lines) in [0,2] and total == 5) or (len(lines) == 1 and total == 7):
-            lines.append(" ".join(s))
-            total = 0
-    if len(lines) == 3 and total == 0:
-        message.content = f'.poster "{lines[0]}" "{lines[1]}" "{lines[2]}"'
-    """
-    if np.random.rand() > 0.98:
+    is_haiku = check_haiku(message)
+    if is_haiku and not mcl.startswith('.'):
+        message.content = f'.poster "{is_haiku[0]}" "{is_haiku[1]}" "{is_haiku[2]}"'
+
+    if not message.author.bot and "poster" in mcl and any(x in mcl for x in ["odds", "chance", "frequency", "how often", "rate"]):
+        await message.channel.send(f"The chance of a poster being generated is: {poster_chance*100}% . A haiku will *always* be posterized")
+        return
+    if np.random.rand() > 1 - poster_chance and not message.content.startswith('.'):
         # split the message evenly into 3
         lines = [" ".join(x) for x in chunkIt(message.content.split(), 3)]
         while len(lines) < 3:
@@ -1254,6 +1367,6 @@ if __name__ == "__main__":
         try:
             bot.run(token.read_text().strip())
         except KeyboardInterrupt:
-            exit("Closing")
+            sys.exit("Closing")
         except:
             pass
