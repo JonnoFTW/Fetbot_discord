@@ -1,0 +1,19 @@
+python-valve
+wheel
+humanize
+discord
+ngrok-api 
+matplotlib
+numpy
+pandas
+requests
+pytz
+seaborn
+ pyyaml 
+syllapy 
+pillow 
+colormath
+ nltk 
+scikit-learn 
+urlextract
+emoji
