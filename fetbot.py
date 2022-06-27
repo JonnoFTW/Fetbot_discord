@@ -1077,11 +1077,30 @@ def get_dall_ep():
         if tn.metadata == "dall-e":
             return tn.public_url
     return None
+
+def is_float(x):
+    try:
+        float(x)
+        return True
+    except ValueError:
+        return False
+
 async def dall_e_task():
     while True:
         ctx, msg, ep = await dall_e_queue.get()
         async with aiohttp.ClientSession() as session:
-            async with session.get(f'{ep}/img.jpg', params={'q': msg}) as resp:
+            parts = re.split(r"--([a-z]+)" ,("--q " if "--q" not in msg else "") + msg)[1:]
+            args = dict(zip(parts[0::2], [x.strip() for x in parts[1::2]]))
+            err = False
+            for arg, r in {'tk': [0,1], 'tp': [0,1], 'temp':[0,1], 'cd': [0, 20]}.items():
+                if arg in args and (not is_float(args[arg]) or not (r[0] < float(args[arg]) < r[1])):
+                    await ctx.send(f"Arg {arg} must be a number in range ({r[0]}, {r[1]}), got {args[arg]}: is float? {is_float(args[arg])}, range: {r}")
+                    err = True
+                    break
+            if err:
+                dall_e_queue.task_done()
+                continue
+            async with session.get(f'{ep}/img.jpg', params=args) as resp:
                 if resp.status == 200:
                     buff = BytesIO(await resp.read())
                     fname = "dalle.jpg"
