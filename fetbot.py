@@ -23,6 +23,8 @@ from pathlib import Path
 from urllib.parse import urlparse
 
 import discord
+from discord import utils
+from discord.ext import commands
 import ngrok
 import humanize
 import aiohttp
@@ -35,7 +37,7 @@ import requests
 import seaborn as sns
 import twitter
 import yaml
-import syllapy
+#import syllapy
 from PIL import Image, ImageFont, ImageDraw, ImageFilter
 from colormath.color_conversions import convert_color
 from colormath.color_diff import delta_e_cie2000
@@ -47,6 +49,8 @@ from nltk.metrics import distance
 from sklearn.cluster import KMeans
 from urlextract import URLExtract
 from valve import rcon
+
+from syllables import syllable_count
 
 
 do_nsfw_check = False
@@ -61,6 +65,7 @@ Run with:
 ~/markov-discord$ TF_CPP_MIN_LOG_LEVEL=3 PYTHONPATH=~/opennsfw ./fetbot.py
 
 """
+ADL_GUILD_ID = 570212775499137024
 
 with open('keys.yaml', 'r') as infile:
     key_store = yaml.safe_load(infile)
@@ -155,7 +160,112 @@ async def on_ready():
     await bot.change_presence(activity=discord.Game(name="Cock/Ball Torture"))
     bot.loop.create_task(status_task())
     bot.loop.create_task(dall_e_task())
+    bot.loop.create_task(gladiator_task())
 
+@bot.command()
+@commands.is_owner()
+async def msggc(ctx, guild: int, channel: int,*, words):
+    await bot.get_guild(guild).get_channel(channel).send(words)
+    
+def get_gladiators(exclude=[]):
+    role = utils.get(bot.get_guild(ADL_GUILD_ID).roles, name='Gladiator')
+    return [m for m in role.members if m.id not in exclude]
+    
+@bot.command()
+@commands.is_owner()
+async def count_old(ctx, days: int):
+    df = pd.read_csv('log.csv')
+    year_ago = (datetime.now() - timedelta(days=days)).timestamp()
+    recent_chatters = set(df.loc[df['timestamp'] > year_ago].author.unique())
+    non_chatters = []
+    users_to_ban = []
+    role = utils.get(ctx.guild.roles, name='Gladiator')
+    changes = []
+    existing_gladiators = [u.id for u in get_gladiators()]
+    for member in ctx.guild.members:
+        if member.id not in recent_chatters:
+            non_chatters.append(member)
+            if member.display_name and member.id not in existing_gladiators:
+                users_to_ban.append(member.display_name)
+                print(f"Moving {member.display_name} to the colosseum")
+            changes.append(member.edit(roles=[role], reason="Volunteered for the colosseum"))
+    await asyncio.gather(*changes)
+            
+    
+    print(f"non-chatters={len(non_chatters)} recent_chatters = {len(recent_chatters)}, {users_to_ban}")
+    await ctx.send(f"There are {len(non_chatters)} who have not chatted in the last {days} days out of {len(ctx.guild.members)} current members")
+    
+GLADIATOR_ROLE = 992000264028557352
+GLADIATOR_CHANNEL = 991998965342019684
+GLADIATORS = {
+    'WEAPON_CURRENT': None,
+    'WEAPON_HOLDER': None
+}
+
+def make_weapon():
+    adj = ['rusty', 'clean', 'spiky', 'shiny', 'jeweled', 'broken', 'perfect', 'large', 'small', 'big', 'tiny', 'dirty', 'disgusting', 'cursed' , 'blessed','haunted', 'evil', 'soul-stealing', 'obliterating', 'super']
+    noun = ['gun', 'knife', 'sword', 'rifle','spear', 'dagger', 'sabre', 'glaive', 'knuckles', 'pistol', 'frying pan', 'rock', 'club', 'shotgun', 'trident', 'kitchen knife','garrot', 'chainsaw', 'machete']
+    return f"{random.choice(adj)} {random.choice(noun)}"
+
+
+async def say_gladiators(msg):
+    return await bot.get_channel(GLADIATOR_CHANNEL).send(msg)
+
+@bot.command()
+@commands.has_role(GLADIATOR_ROLE)
+async def use(ctx, *, name):
+    if GLADIATORS['WEAPON_HOLDER'] == ctx.author.id and GLADIATORS['WEAPON_CURRENT'] == name:
+        other_gladiators = get_gladiators(exclude=[ctx.author.id])
+        enemy = random.choice(other_gladiators)
+        await say_gladiators(f"{ctx.author.display_name} has used the {GLADIATORS['WEAPON_CURRENT']} against {enemy.mention}")
+        await enemy.kick(reason="Died in combat")
+        await say_gladiators(f"{enemy.mention} has been killed. {len(get_gladiators())} remain")
+        GLADIATORS['WEAPON_CURRENT'] = None
+        GLADIATORS['WEAPON_HOLDER'] = None
+        await reload_weapon()
+    else:
+        await say_gladiators(f"You don't hold that weapon")
+    
+@bot.command()
+@commands.has_role(GLADIATOR_ROLE)
+async def pickup(ctx, *, name):
+    if GLADIATORS['WEAPON_HOLDER'] is None:
+        if name == GLADIATORS['WEAPON_CURRENT']:
+            GLADIATORS['WEAPON_HOLDER'] = ctx.author.id
+            await say_gladiators(f"{ctx.author.mention} please type `.use {GLADIATORS['WEAPON_CURRENT']}` to kill someone. You have 10 minutes to comply")
+    else:
+        await say_gladiators(f"{GLADIATORS['WEAPON_CURRENT']} is already held by someone else")
+        
+async def reload_weapon():
+    GLADIATORS['WEAPON_CURRENT'] = make_weapon()
+    weapon = GLADIATORS['WEAPON_CURRENT']
+    GLADIATORS['WEAPON_HOLDER'] = None
+    channel = bot.get_channel(GLADIATOR_CHANNEL)
+    return await channel.send(f"Dropping the {weapon} on the ground. First person to type `.pickup {weapon}` will kill a random Gladiator. If nobody picks it up I will kill someone myself")
+    
+async def gladiator_task():
+    while True:
+        # drop a weapon
+        users = get_gladiators()
+        if len(users) == 1:
+            say_gladiators(f"{users[0].mention} congratulations on winning the colosseum squid-game purge! You may use the rest of the server, you now have the survivor role.")
+            survivor_role = utils.get(get.get_guild(ADL_GUILD_ID).roles, name='Survivor')
+            await users[0].edit(roles=[survivor_role])
+            return
+        if len(users) == 0:
+            await asyncio.sleep(60*60)
+            continue
+        await reload_weapon()
+        await asyncio.sleep(60*10)
+        # if nobody has picked up the weapon, ban a random person
+        if GLADIATORS['WEAPON_HOLDER'] is None:
+            enemy = random.choice(users)
+            await say_gladiators(f"Nobody has picked up the {GLADIATORS['WEAPON_CURRENT']} yet. I'm killing {enemy.mention} myself")
+            await bot.get_guild(ADL_GUILD_ID).kick(enemy, reason="Failed to comply with orders")
+            await say_gladiators(f"{enemy.mention} has been killed. {len(get_gladiators())} remain")
+            GLADIATORS['WEAPON_CURRENT'] = None
+            GLADIATORS['WEAPON_HOLDER'] = None
+        
 
 @bot.command()
 @commands.is_owner()
@@ -495,7 +605,7 @@ async def find(ctx):
 @bot.command()
 @commands.is_owner()
 async def dump(ctx, status='old'):
-    guild = bot.get_guild(570212775499137024)
+    guild = bot.get_guild(ADL_GUILD_ID)
     data = []
     meta = {
         'channels': {},
@@ -912,16 +1022,27 @@ async def now_playing(ctx, user=''):
             'method': 'user.getrecenttracks', 'user': user, 'format': 'json', 'api_key': key}).json()
         song = data['recenttracks']['track'][0]
         msg = f"**{user}** {'is now listening' if '@attr' in song else 'last listened'} to \"*{song['name']}*\" by {song['artist']['#text']} from *{song['album']['#text']}*\n{song['url']}"
-
+        tags = []
+        try:
+            tags_data = requests.get("http://ws.audioscrobbler.com/2.0/", {
+                'method': 'track.getInfo', 'format': 'json', 'api_key': key,
+                'artist':song['artist']['#text'], 'track': song['name']}).json()
+            print("got tags", tags_data)
+            for tag in tags_data['track']['toptags']['tag']:
+                tags.append(tag['name'])
+        except Exception as e:
+            print(e)
+            pass
+        
         try:
             link = song['image'][2]['#text']
-            print("link=", link, song['image'])
             im_data = requests.get(
                 ('http://' if not link.startswith('http') else '') + song['image'][2]['#text']).content
             buff = BytesIO(im_data)
             file = discord.File(buff, filename="cover.jpg")
             embed = discord.Embed()
             embed.set_image(url=f'attachment://cover.jpg')
+            embed.description = f"{ctx.author.mention}, tags: {', '.join(tags)}"
             await ctx.send(msg, file=file, embed=embed)
         except Exception as e:
             print(e)
@@ -992,11 +1113,13 @@ async def players(ctx):
 
 @bot.command(aliases=['profile'])
 async def statsme(ctx):
+    """ Show your stats"""
     await ctx.send(f"{ctx.author.mention} User stats http://45.248.76.3:5000/u/{ctx.author.id}")
 
 
 @bot.command()
 async def ts(ctx):
+    """" Show the current timestamp"""
     t = ctx.message.created_at.replace(tzinfo=pytz.UTC)
     await ctx.send(f"{t.timestamp()} {t.tzinfo}")
 
@@ -1026,12 +1149,14 @@ async def currentmap(ctx):
 
 @bot.command()
 async def thetime(ctx):
+    """The current time in Adelaide, Australia"""
     tz = pytz.timezone("Australia/Adelaide")
     await ctx.send(re.sub(r" 0(\d)", r" \g<1>", f"The time is: {datetime.now().astimezone(tz):%I:%M%p %A %d %B, %Y}"))
 
 
 @bot.command(name='time')
 async def timeleft(ctx):
+    """Time left before the end of the day in Adelaide/Australia"""
     tz = pytz.timezone("Australia/Adelaide")
     mins = ((datetime.now().astimezone(tz) + timedelta(days=1)).replace(hour=0,
                                                                         minute=0, second=0) - datetime.now().astimezone(tz)).total_seconds() / 60
@@ -1067,7 +1192,10 @@ def chunkIt(seq, num):
 
 @bot.command()
 async def syllables(ctx, word):
-    await ctx.send(f"{word} has {syllapy.count(word)} syllables")
+    """
+    How many syllables a word has
+    """
+    await ctx.send(f"{word} has {syllable_count(word)} syllables")
 
 dall_e_queue = asyncio.Queue()
 
@@ -1089,18 +1217,60 @@ async def dall_e_task():
     while True:
         ctx, msg, ep = await dall_e_queue.get()
         async with aiohttp.ClientSession() as session:
-            parts = re.split(r"--([a-z]+)" ,("--q " if "--q" not in msg else "") + msg)[1:]
+            parts = re.split(r"--([A-Za-z]+)" ,("--q " if "--q" not in msg else "") + msg)[1:]
             args = dict(zip(parts[0::2], [x.strip() for x in parts[1::2]]))
             err = False
-            for arg, r in {'tk': [0,1], 'tp': [0,1], 'temp':[0,1], 'cd': [0, 20]}.items():
-                if arg in args and (not is_float(args[arg]) or not (r[0] < float(args[arg]) < r[1])):
-                    await ctx.send(f"Arg {arg} must be a number in range ({r[0]}, {r[1]}), got {args[arg]}: is float? {is_float(args[arg])}, range: {r}")
-                    err = True
-                    break
+            arg_funcs = {
+                'steps': dict(out='ddim_steps', range=[1, 200], func=int),
+                'W': dict(out='W', range=[64, 728], func=int),
+                'H': dict(out='H', range=[64, 728], func=int),
+                'scale': dict(out='scale', range=[1, 64], func=float),
+                'strength': dict(out='strength', range=[0, 1], func=float),
+                'seed': dict(out='seed', range=[-np.inf, np.inf], func=int),
+            }
+            for arg, r in arg_funcs.items():
+                if arg in args:
+                    try:
+                        val = r['func'](args[arg])
+                        if not r['range'][0] <= val <= r['range'][1]:
+                            raise Exception()
+                        del args[arg]
+                        args[r['out']] = val
+                    except:
+                        await ctx.send(f"Arg {arg} must be a {r['func'].__name__} in range {r['range']}, got {args[arg]}\nargs={args}")
+                        err = True
+                        break
             if err:
                 dall_e_queue.task_done()
                 continue
-            async with session.get(f'{ep}/img.jpg', params=args) as resp:
+            if isinstance(ctx.channel, discord.channel.DMChannel):
+                headers = {
+                    'X-Discord-User': ctx.message.author.name,
+                    'X-Discord-UserId': str(ctx.message.author.id),
+                    'X-Discord-Server': 'DM',
+                    'X-Discord-Channel': 'DM'
+                }
+            else:
+                headers = { 
+                    'X-Discord-User': ctx.message.author.display_name,
+                    'X-Discord-UserId': str(ctx.message.author.id),
+                    'X-Discord-Server': ctx.message.guild.name,
+                    'X-Discord-ServerId': str(ctx.message.guild.id),
+                    'X-Discord-Channel': ctx.channel.name,
+                    'X-Discord-ChannelId': str(ctx.channel.id)
+                }
+            start_t = int(time.time())
+            if len(ctx.message.attachments) > 0:
+                route = "img2img.jpg"
+                formdata = aiohttp.FormData()
+                formdata.add_field('file', BytesIO(await ctx.message.attachments[0].read()), filename='image.jpg')
+                kwargs = {'data': formdata}
+                method = session.post
+            else:
+                route = "img.jpg"
+                kwargs = {}
+                method = session.get
+            async with method(f'{ep}/{route}', params=args, headers=headers, **kwargs) as resp:
                 if resp.status == 200:
                     buff = BytesIO(await resp.read())
                     fname = "dalle.jpg"
@@ -1108,26 +1278,41 @@ async def dall_e_task():
                     file = discord.File(buff, filename=fname)
                     embed = discord.Embed()
                     embed.set_image(url=f'attachment://{fname}')
-                    embed.description = f"{ctx.message.author.mention}: {msg}"
+                    embed.description = f"{ctx.message.author.mention}\n{args['q']}"
+                    if len(args) > 1:
+                        embed.add_field(name=f"Args", value=" ".join([f"{k}={v}" for k,v in args.items() if k!='q']))
+                    embed.add_field(name=f"Took", value=str(int(time.time() - start_t))+"secs")
+                    if 'X-SD-Seed' in resp.headers:
+                        embed.add_field(name='Seed', value=resp.headers['X-SD-Seed'])
                     await ctx.send(file=file, embed=embed)
                 else:
                     resp_text = await resp.text()
                     await ctx.send(f"Dall-e service returned error ({resp.status}): {resp_text}")
-                
+
                 dall_e_queue.task_done()
-        
-@bot.command()
+
+@bot.command(aliases=["dream", "sd", "diffuse", "diffusion"])
 async def dalle(ctx, *, msg):
+    """
+    will generate an image from prompt, if you upload an image, it will be generated on that
+    Extra arguments are:
+      --steps : number of steps of refinement, 10 is fast, 50 is okay, 150 is great
+      --scale : adherence to the prompt, 7.5 is good
+      --H     : height in pixels
+      --W     : width in pixels
+      --seed  : the seed, same seed with same prompt will make the same image
+      --strength :  used for img2img, a float in range [0..1]
+    """
     # put the message in the queue
     if not msg:
         await ctx.send("You must provide a prompt")
         return
     endpoint = get_dall_ep()
     if not endpoint:
-        await ctx.send("dall-e is not running")
+        await ctx.send("dream is not running")
         return
     dall_e_queue.put_nowait((ctx, msg, endpoint))
-    
+
 
 
 @bot.command()
@@ -1228,7 +1413,7 @@ async def handle_bot_mention(message):
 def check_haiku(message):
     # count the syllables and check if the message is a haiku
     poem = message.content if hasattr(message, 'content') else message
-    parts = [(syllapy.count(x),x) for x in re.sub(r'[^\w \n\t]', '', poem).split()]
+    parts = [(syllable_count(x),x) for x in re.sub(r'[^\w \n\t]', '', poem).split()]
     # read until we have 5 then 7 then 5
     # pop parts,
     first_line, second_line, third_line = 0, 0, 0
@@ -1250,20 +1435,24 @@ def check_haiku(message):
             return [' '.join(x) for x in (top_line, middle_line, bottom_line)]
     except:
         return False
-    
+
 
 @bot.event
 async def on_member_join(member):
-    await member.guild.get_channel(570216721512792105).send(f'{member.mention}: please remember that asking (including sending DMs) for drugs or links to underground drug servers will result in an instant ban')
+    channel = member.guild.get_channel(570216721512792105)
+    if channel:
+        await channel.send(f'{member.mention}: please remember that asking (including sending DMs) for drugs or links to underground drug servers will result in an instant ban')
 
 
 @bot.event
 async def on_message(message):
     if type(message.channel) is discord.DMChannel:
         name = "DirectMessage"
+        gid = ""
     else:
         name = message.channel.name
-    log_msg = f"({datetime.now()}) #{name}({message.author.id})\t{message.author.name}\t: {message.content}"
+        gid = message.guild.id
+    log_msg = f"({datetime.now()}) ({gid}) #{name}({message.author.id})\t{message.author.name}\t: {message.content}"
     # print("Message channel type:", message.channel, type(message.channel))
     if isinstance(message.channel, discord.channel.TextChannel):
         row_dict = {
@@ -1370,7 +1559,7 @@ async def on_message(message):
     if not message.author.bot and "poster" in mcl and any(x in mcl for x in ["odds", "chance", "frequency", "how often", "rate"]):
         await message.channel.send(f"The chance of a poster being generated is: {poster_chance*100}% . A haiku will *always* be posterized")
         return
-    if np.random.rand() > 1 - poster_chance and not message.content.startswith('.'):
+    if gid == ADL_GUILD_ID and np.random.rand() > 1 - poster_chance and not message.content.startswith('.'):
         # split the message evenly into 3
         lines = [" ".join(x) for x in chunkIt(message.content.split(), 3)]
         while len(lines) < 3:
