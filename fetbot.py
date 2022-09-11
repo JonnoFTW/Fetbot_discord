@@ -1,5 +1,4 @@
 #!/usr/bin/env python3
-#from opennsfw.classify_nsfw_new import check_img, get_model
 import sys
 import asyncio
 import csv
@@ -9,8 +8,6 @@ import os
 import pickle
 import random
 import re
-import sqlite3
-import string
 import subprocess
 import time
 import traceback
@@ -24,7 +21,6 @@ from urllib.parse import urlparse
 
 import discord
 from discord import utils
-from discord.ext import commands
 import ngrok
 import humanize
 import aiohttp
@@ -37,17 +33,14 @@ import requests
 import seaborn as sns
 import twitter
 import yaml
-#import syllapy
 from PIL import Image, ImageFont, ImageDraw, ImageFilter
 from colormath.color_conversions import convert_color
 from colormath.color_diff import delta_e_cie2000
 from colormath.color_objects import sRGBColor, LabColor
 from discord.ext import commands
 from emoji import get_emoji_regexp, emojize
-from matplotlib import font_manager
 from nltk.metrics import distance
 from sklearn.cluster import KMeans
-from urlextract import URLExtract
 from valve import rcon
 
 from syllables import syllable_count
@@ -162,11 +155,13 @@ async def on_ready():
     bot.loop.create_task(dall_e_task())
     bot.loop.create_task(gladiator_task())
 
+
 @bot.command()
 @commands.is_owner()
 async def msggc(ctx, guild: int, channel: int,*, words):
     await bot.get_guild(guild).get_channel(channel).send(words)
-    
+
+
 def get_gladiators(exclude=[]):
     role = utils.get(bot.get_guild(ADL_GUILD_ID).roles, name='Gladiator')
     return [m for m in role.members if m.id not in exclude]
@@ -190,11 +185,10 @@ async def count_old(ctx, days: int):
                 print(f"Moving {member.display_name} to the colosseum")
             changes.append(member.edit(roles=[role], reason="Volunteered for the colosseum"))
     await asyncio.gather(*changes)
-            
     
     print(f"non-chatters={len(non_chatters)} recent_chatters = {len(recent_chatters)}, {users_to_ban}")
     await ctx.send(f"There are {len(non_chatters)} who have not chatted in the last {days} days out of {len(ctx.guild.members)} current members")
-    
+
 GLADIATOR_ROLE = 992000264028557352
 GLADIATOR_CHANNEL = 991998965342019684
 GLADIATORS = {
@@ -235,21 +229,23 @@ async def pickup(ctx, *, name):
             await say_gladiators(f"{ctx.author.mention} please type `.use {GLADIATORS['WEAPON_CURRENT']}` to kill someone. You have 10 minutes to comply")
     else:
         await say_gladiators(f"{GLADIATORS['WEAPON_CURRENT']} is already held by someone else")
-        
+
+
 async def reload_weapon():
     GLADIATORS['WEAPON_CURRENT'] = make_weapon()
     weapon = GLADIATORS['WEAPON_CURRENT']
     GLADIATORS['WEAPON_HOLDER'] = None
     channel = bot.get_channel(GLADIATOR_CHANNEL)
     return await channel.send(f"Dropping the {weapon} on the ground. First person to type `.pickup {weapon}` will kill a random Gladiator. If nobody picks it up I will kill someone myself")
-    
+
+
 async def gladiator_task():
     while True:
         # drop a weapon
         users = get_gladiators()
         if len(users) == 1:
-            say_gladiators(f"{users[0].mention} congratulations on winning the colosseum squid-game purge! You may use the rest of the server, you now have the survivor role.")
-            survivor_role = utils.get(get.get_guild(ADL_GUILD_ID).roles, name='Survivor')
+            await say_gladiators(f"{users[0].mention} congratulations on winning the colosseum squid-game purge! You may use the rest of the server, you now have the survivor role.")
+            survivor_role = utils.get(bot.get_guild(ADL_GUILD_ID).roles, name='Survivor')
             await users[0].edit(roles=[survivor_role])
             return
         if len(users) == 0:
@@ -925,8 +921,7 @@ async def permcheck(ctx):
 
 
 @bot.command(name='poster')
-# @commands.has_role("Admin")
-async def poster(ctx, arg1="", arg2="", arg3="", *args):
+async def poster(ctx, arg1="", arg2="", arg3="", *args, **kwargs):
     """
     Generate a cool posters. Use quote marks to separate lines eg: .poster "first line" "" "third line"
     """
@@ -945,8 +940,14 @@ async def poster(ctx, arg1="", arg2="", arg3="", *args):
         arg1 = await commands.clean_content(fix_channel_mentions=True, use_nicknames=True).convert(ctx, arg1)
         arg2 = await commands.clean_content(fix_channel_mentions=True, use_nicknames=True).convert(ctx, arg2)
         arg3 = await commands.clean_content(fix_channel_mentions=True, use_nicknames=True).convert(ctx, arg3)
-        im = Image.open(BytesIO(requests.get(
-            "https://source.unsplash.com/random").content))
+        if kwargs.get('dall_e'):
+            im_buf, _, _, _ = await get_dall_e_img(ctx, f'{arg1}, {arg2}, {arg3} --steps 120', kwargs['dall_e'])
+        else:
+            async with aiohttp.ClientSession() as session:
+                async with session.get("https://source.unsplash.com/random") as resp:
+                    if resp.status == 200:
+                        im_buf = BytesIO(await resp.read())
+        im = Image.open(im_buf)
         basewidth = 960
         wpercent = (basewidth / float(im.size[0]))
         hsize = int((float(im.size[1]) * float(wpercent)))
@@ -1206,6 +1207,7 @@ def get_dall_ep():
             return tn.public_url
     return None
 
+
 def is_float(x):
     try:
         float(x)
@@ -1213,83 +1215,103 @@ def is_float(x):
     except ValueError:
         return False
 
+
+class DallError(Exception):
+    pass
+
+
+async def get_dall_e_img(ctx, msg, ep):
+    """
+    Return a buffer with the generated image
+    ctx: discord message context
+    msg: the message
+    ep: the endpoint to call
+    """
+    async with aiohttp.ClientSession() as session:
+        parts = re.split(r"--([A-Za-z]+)", ("--q " if "--q" not in msg else "") + msg)[1:]
+        args = dict(zip(parts[0::2], [x.strip() for x in parts[1::2]]))
+        err = False
+        arg_funcs = {
+            'steps': dict(out='ddim_steps', range=[1, 200], func=int),
+            'W': dict(out='W', range=[64, 728], func=int),
+            'H': dict(out='H', range=[64, 728], func=int),
+            'scale': dict(out='scale', range=[1, 64], func=float),
+            'strength': dict(out='strength', range=[0, 1], func=float),
+            'seed': dict(out='seed', range=[-np.inf, np.inf], func=int),
+        }
+        for arg, r in arg_funcs.items():
+            if arg in args:
+                try:
+                    val = r['func'](args[arg])
+                    if not r['range'][0] <= val <= r['range'][1]:
+                        raise Exception()
+                    del args[arg]
+                    args[r['out']] = val
+                except:
+                    await ctx.send(f"Arg {arg} must be a {r['func'].__name__} in range {r['range']}, got {args[arg]}\nargs={args}")
+                    err = True
+                    break
+        if err:
+            raise ValueError("Bad args")
+        if isinstance(ctx.channel, discord.channel.DMChannel):
+            headers = {
+                'X-Discord-User': ctx.message.author.name,
+                'X-Discord-UserId': str(ctx.message.author.id),
+                'X-Discord-Server': 'DM',
+                'X-Discord-Channel': 'DM'
+            }
+        else:
+            headers = {
+                'X-Discord-User': ctx.message.author.display_name,
+                'X-Discord-UserId': str(ctx.message.author.id),
+                'X-Discord-Server': ctx.message.guild.name,
+                'X-Discord-ServerId': str(ctx.message.guild.id),
+                'X-Discord-Channel': ctx.channel.name,
+                'X-Discord-ChannelId': str(ctx.channel.id)
+            }
+        start_t = int(time.time())
+        if len(ctx.message.attachments) > 0:
+            route = "img2img.jpg"
+            formdata = aiohttp.FormData()
+            formdata.add_field('file', BytesIO(await ctx.message.attachments[0].read()), filename='image.jpg')
+            kwargs = {'data': formdata}
+            method = session.post
+        else:
+            route = "img.jpg"
+            kwargs = {}
+            method = session.get
+        async with method(f'{ep}/{route}', params=args, headers=headers, **kwargs) as resp:
+            if resp.status == 200:
+                buff = BytesIO(await resp.read())
+                duration = str(round(time.time() - start_t, 2))
+                return buff, resp, args, duration
+            else:
+                resp_text = await resp.text()
+                raise DallError(f"Dall-e service returned error ({resp.status}): {resp_text}")
+
+
 async def dall_e_task():
     while True:
         ctx, msg, ep = await dall_e_queue.get()
-        async with aiohttp.ClientSession() as session:
-            parts = re.split(r"--([A-Za-z]+)" ,("--q " if "--q" not in msg else "") + msg)[1:]
-            args = dict(zip(parts[0::2], [x.strip() for x in parts[1::2]]))
-            err = False
-            arg_funcs = {
-                'steps': dict(out='ddim_steps', range=[1, 200], func=int),
-                'W': dict(out='W', range=[64, 728], func=int),
-                'H': dict(out='H', range=[64, 728], func=int),
-                'scale': dict(out='scale', range=[1, 64], func=float),
-                'strength': dict(out='strength', range=[0, 1], func=float),
-                'seed': dict(out='seed', range=[-np.inf, np.inf], func=int),
-            }
-            for arg, r in arg_funcs.items():
-                if arg in args:
-                    try:
-                        val = r['func'](args[arg])
-                        if not r['range'][0] <= val <= r['range'][1]:
-                            raise Exception()
-                        del args[arg]
-                        args[r['out']] = val
-                    except:
-                        await ctx.send(f"Arg {arg} must be a {r['func'].__name__} in range {r['range']}, got {args[arg]}\nargs={args}")
-                        err = True
-                        break
-            if err:
-                dall_e_queue.task_done()
-                continue
-            if isinstance(ctx.channel, discord.channel.DMChannel):
-                headers = {
-                    'X-Discord-User': ctx.message.author.name,
-                    'X-Discord-UserId': str(ctx.message.author.id),
-                    'X-Discord-Server': 'DM',
-                    'X-Discord-Channel': 'DM'
-                }
-            else:
-                headers = { 
-                    'X-Discord-User': ctx.message.author.display_name,
-                    'X-Discord-UserId': str(ctx.message.author.id),
-                    'X-Discord-Server': ctx.message.guild.name,
-                    'X-Discord-ServerId': str(ctx.message.guild.id),
-                    'X-Discord-Channel': ctx.channel.name,
-                    'X-Discord-ChannelId': str(ctx.channel.id)
-                }
-            start_t = int(time.time())
-            if len(ctx.message.attachments) > 0:
-                route = "img2img.jpg"
-                formdata = aiohttp.FormData()
-                formdata.add_field('file', BytesIO(await ctx.message.attachments[0].read()), filename='image.jpg')
-                kwargs = {'data': formdata}
-                method = session.post
-            else:
-                route = "img.jpg"
-                kwargs = {}
-                method = session.get
-            async with method(f'{ep}/{route}', params=args, headers=headers, **kwargs) as resp:
-                if resp.status == 200:
-                    buff = BytesIO(await resp.read())
-                    fname = "dalle.jpg"
-                    buff.seek(0)
-                    file = discord.File(buff, filename=fname)
-                    embed = discord.Embed()
-                    embed.set_image(url=f'attachment://{fname}')
-                    embed.description = f"{ctx.message.author.mention}\n{args['q']}"
-                    if len(args) > 1:
-                        embed.add_field(name=f"Args", value=" ".join([f"{k}={v}" for k,v in args.items() if k!='q']))
-                    embed.add_field(name=f"Took", value=str(int(time.time() - start_t))+"secs")
-                    if 'X-SD-Seed' in resp.headers:
-                        embed.add_field(name='Seed', value=resp.headers['X-SD-Seed'])
-                    await ctx.send(file=file, embed=embed)
-                else:
-                    resp_text = await resp.text()
-                    await ctx.send(f"Dall-e service returned error ({resp.status}): {resp_text}")
+        try:
+            buff, resp, args, duration = await get_dall_e_img(ctx, msg, ep)
+            fname = "dalle.jpg"
+            buff.seek(0)
+            file = discord.File(buff, filename=fname)
+            embed = discord.Embed()
+            embed.set_image(url=f'attachment://{fname}')
+            embed.description = f"{ctx.message.author.mention}\n{args['q']}"
+            if len(args) > 1:
+                embed.add_field(name=f"Args", value=" ".join([f"{k}={v}" for k, v in args.items() if k != 'q']))
+            embed.add_field(name=f"Took", value=duration + "secs")
+            if 'X-SD-Seed' in resp.headers:
+                embed.add_field(name='Seed', value=resp.headers['X-SD-Seed'])
+            await ctx.message.reply(file=file, embed=embed)
+        except DallError:
+            await ctx.message.reply(msg)
+        finally:
+            dall_e_queue.task_done()
 
-                dall_e_queue.task_done()
 
 @bot.command(aliases=["dream", "sd", "diffuse", "diffusion"])
 async def dalle(ctx, *, msg):
@@ -1305,14 +1327,13 @@ async def dalle(ctx, *, msg):
     """
     # put the message in the queue
     if not msg:
-        await ctx.send("You must provide a prompt")
+        await ctx.send("You must provide a prompt, see `.sd --help` for more")
         return
     endpoint = get_dall_ep()
     if not endpoint:
         await ctx.send("dream is not running")
         return
     dall_e_queue.put_nowait((ctx, msg, endpoint))
-
 
 
 @bot.command()
@@ -1410,6 +1431,7 @@ async def handle_bot_mention(message):
                                                                                  "Hold me :pleading_face:", "I love you so much :smiling_face_with_3_hearts:", "You make me feel special inside",
                                                                                  "You deserve to be loved and respected", "I love and respect you very much", "You are capable of more than you know"]))
 
+
 def check_haiku(message):
     # count the syllables and check if the message is a haiku
     poem = message.content if hasattr(message, 'content') else message
@@ -1452,7 +1474,7 @@ async def on_message(message):
     else:
         name = message.channel.name
         gid = message.guild.id
-    log_msg = f"({datetime.now()}) ({gid}) #{name}({message.author.id})\t{message.author.name}\t: {message.content}"
+    log_msg = f"({datetime.now()}) ({gid}) #{name}(chanid={message.channel.id})(userid={message.author.id})\t{message.author.name}\t: {message.content}"
     # print("Message channel type:", message.channel, type(message.channel))
     if isinstance(message.channel, discord.channel.TextChannel):
         row_dict = {
@@ -1498,48 +1520,48 @@ async def on_message(message):
         except:
             print("failed to kick", message.author)
         return
-    urls = []
-    image_types = ("image/jpeg", "image/png",
-                   "video/mp4", "video/webm", "image/gif")
+    # urls = []
+    # image_types = ("image/jpeg", "image/png",
+    #                "video/mp4", "video/webm", "image/gif")
     #for url in URLExtract().find_urls(message.content):
     #    response = requests.head(url)
     #    if response.headers['Content-Type'] in image_types and int(response.headers['Content-Length']) < 10485760:
     #        urls.append(discord.Embed(url=url, type="image"))      
-    if do_nsfw_check and (message.attachments or message.embeds or urls):
-        images = []  # list of filenames to check
-        for attachment in message.attachments:
-            # print("Message has attachment", attachment)
-            if attachment.content_type in image_types:
-                # print("Saving attachment", attachment.filename)
-                with open(attachment.filename, "wb") as temp_file:
-                    await attachment.save(temp_file)
-                    images.append(attachment.filename)
-        for embed in message.embeds + urls:
-            if embed.type == "image":
-                fname = urlparse(embed.url).path.split('/')[-1]
-                print("Fetching " + embed.url + " to " + fname)
-                with open(fname, 'wb') as out_file:
-                    out_file.write(requests.get(embed.url).content)
-                images.append(fname)
-        for image in images:
-            # print("Scoring", image)
-            if not os.path.exists(image):
-                continue
-            sfw, nsfw = check_img(nsfw_model, image)
-            msg = f"{image} scores SFW: {round(100 * sfw, 2)}% NSFW: {round(100 * nsfw, 2)}%"
-            print(msg)
-            if "score" in message.content.lower().split():
-                await message.channel.send(msg)
-            if nsfw > 0.95:
-                if message.channel.id != 570213862285115393:  # is_nsfw():
-                    try:
-                        await message.channel.send(f"{message.author.mention} Don't post NSFW images outside the nsfw channel. Score was {round(100 * nsfw, 2)}%")
-                        await message.delete()
-                    except Exception as e:
-                        print(f"Couldn't delete image: {e}")
-                else:
-                    await message.add_reaction('<:unf:687858959406989318>')
-            os.unlink(image)
+    # if do_nsfw_check and (message.attachments or message.embeds or urls):
+    #     images = []  # list of filenames to check
+    #     for attachment in message.attachments:
+    #         # print("Message has attachment", attachment)
+    #         if attachment.content_type in image_types:
+    #             # print("Saving attachment", attachment.filename)
+    #             with open(attachment.filename, "wb") as temp_file:
+    #                 await attachment.save(temp_file)
+    #                 images.append(attachment.filename)
+    #     for embed in message.embeds + urls:
+    #         if embed.type == "image":
+    #             fname = urlparse(embed.url).path.split('/')[-1]
+    #             print("Fetching " + embed.url + " to " + fname)
+    #             with open(fname, 'wb') as out_file:
+    #                 out_file.write(requests.get(embed.url).content)
+    #             images.append(fname)
+    #     for image in images:
+    #         # print("Scoring", image)
+    #         if not os.path.exists(image):
+    #             continue
+    #         sfw, nsfw = check_img(nsfw_model, image)
+    #         msg = f"{image} scores SFW: {round(100 * sfw, 2)}% NSFW: {round(100 * nsfw, 2)}%"
+    #         print(msg)
+    #         if "score" in message.content.lower().split():
+    #             await message.channel.send(msg)
+    #         if nsfw > 0.95:
+    #             if message.channel.id != 570213862285115393:  # is_nsfw():
+    #                 try:
+    #                     await message.channel.send(f"{message.author.mention} Don't post NSFW images outside the nsfw channel. Score was {round(100 * nsfw, 2)}%")
+    #                     await message.delete()
+    #                 except Exception as e:
+    #                     print(f"Couldn't delete image: {e}")
+    #             else:
+    #                 await message.add_reaction('<:unf:687858959406989318>')
+    #         os.unlink(image)
     # check if I've been mentioned
     if 618425432487886879 in message.raw_mentions:
         await handle_bot_mention(message)
@@ -1555,7 +1577,9 @@ async def on_message(message):
     is_haiku = check_haiku(message)
     if is_haiku and not mcl.startswith('.'):
         message.content = f'.poster "{is_haiku[0]}" "{is_haiku[1]}" "{is_haiku[2]}"'
-
+        ctx = await bot.get_context(message)
+        await ctx.invoke(bot.get_command('poster'), is_haiku[0], is_haiku[1], is_haiku[2], dall_e=get_dall_ep())
+        return
     if not message.author.bot and "poster" in mcl and any(x in mcl for x in ["odds", "chance", "frequency", "how often", "rate"]):
         await message.channel.send(f"The chance of a poster being generated is: {poster_chance*100}% . A haiku will *always* be posterized")
         return
