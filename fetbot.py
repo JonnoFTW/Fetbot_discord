@@ -152,7 +152,6 @@ async def on_ready():
     print(f"Logged on")
     await bot.change_presence(activity=discord.Game(name="Cock/Ball Torture"))
     bot.loop.create_task(status_task())
-    bot.loop.create_task(dall_e_task())
     bot.loop.create_task(gladiator_task())
 
 
@@ -486,12 +485,94 @@ async def bomold(ctx):
     embed.set_image(url='attachment://radar.gif')
     await ctx.send(file=file, embed=embed)
 
+def get_guild_city(ctx, key):
+    default = {'radar': 'Adelaide (Buckland Park)', 'weather': 'adelaide'}
+    with open('cities.json') as in_file:
+        data = json.load(in_file)
+        return data.get(str(ctx.guild.id), default)[key]
+
 
 @bot.command()
-async def bom(ctx):
+async def bom(ctx, *, site=None):
+    radars = {
+       "Brewarrina":"IDR933",
+       "Canberra (Captains Flat)":"IDR403",
+       "Grafton":"IDR283",
+       "Hillston":"IDR943",
+       "Moree":"IDR533",
+       "Namoi (Blackjack Mountain)":"IDR693",
+       "Newcastle":"IDR043",
+       "Norfolk Island":"IDR623",
+       "Sydney":"IDR713",
+       "Wagga Wagga":"IDR553",
+       "Wollongong (Appin)":"IDR033",
+       "Yeoval":"IDR963",
+       "Alice Springs":"IDR253",
+       "Darwin (Berrimah)":"IDR633",
+       "Gove":"IDR093",
+       "Katherine (Tindal)":"IDR423",
+       "Warruwi":"IDR773",
+       "Bowen":"IDR243",
+       "Brisbane (Mt Stapylton)":"IDR663",
+       "Cairns":"IDR193",
+       "Emerald":"IDR723",
+       "Gladstone":"IDR233",
+       "Greenvale":"IDR743",
+       "Gympie (Mt Kanigan)":"IDR083",
+       "Longreach":"IDR563",
+       "Mackay":"IDR223",
+       "Marburg":"IDR503",
+       "Mornington Island":"IDR363",
+       "Mount Isa":"IDR753",
+       "Taroom":"IDR983",
+       "Townsville (Hervey Range)":"IDR733",
+       "Warrego":"IDR673",
+       "Weipa":"IDR783",
+       "Willis Island":"IDR413",
+       "Adelaide (Buckland Park)":"IDR643",
+       "Adelaide (Sellicks Hill)":"IDR463",
+       "Ceduna":"IDR333",
+       "Mt Gambier":"IDR143",
+       "Woomera":"IDR273",
+       "Hobart (Mt Koonya)":"IDR763",
+       "Hobart Airport":"IDR373",
+       "N.W. Tasmania (West Takone)":"IDR523",
+       "Bairnsdale":"IDR683",
+       "Melbourne":"IDR023",
+       "Mildura":"IDR973",
+       "Rainbow":"IDR953",
+       "Yarrawonga":"IDR493",
+       "Albany":"IDR313",
+       "Broome":"IDR173",
+       "Carnavon":"IDR053",
+       "Dampier":"IDR153",
+       "Esperance":"IDR323",
+       "Geraldton":"IDR063",
+       "Giles":"IDR443",
+       "Halls Creek":"IDR393",
+       "Kalgoorlie":"IDR483",
+       "Learmonth":"IDR293",
+       "Newdegate":"IDR383",
+       "Perth (Serpentine)":"IDR703",
+       "Port Hedland":"IDR163",
+       "South Doodlakine":"IDR583",
+       "Watheroo":"IDR793",
+       "Wyndham":"IDR073"
+    }
+    if site is None:
+        try:
+            site = get_guild_city(ctx, 'radar')
+        except:
+            pass
+    else:
+        if site not in radars:
+            await ctx.send(f'No such radar site {site}. Perhaps you meant: {get_suggestions(radars, site)}')
+            return
+
+    rid = radars.get(site, radars['Adelaide (Buckland Park)'])
     prefix = "http://www.bom.gov.au/products/radar_transparencies/"
-    fnames = ["IDR.legend.0.png", "IDR643.background.png",
-              "IDR643.topography.png", "IDR643.range.png", "IDR643.locations.png"]
+    fnames = ["IDR.legend.0.png", f"{rid}.background.png",
+              f"{rid}.topography.png", f"{rid}.range.png", f"{rid}.locations.png"]
     out_name = 'radar_animated.gif'
     async with ctx.typing():
         image = None
@@ -516,7 +597,7 @@ async def bom(ctx):
         with FTP('ftp.bom.gov.au') as ftp:
             ftp.login('anonymous', 'guest')
             prefix = '/anon/gen/radar'
-            rain_frames = [f for f in ftp.nlst(prefix) if 'IDR643.T' in f]
+            rain_frames = [f for f in ftp.nlst(prefix) if f'{rid}.T' in f]
             for f in rain_frames:
                 p = Path('radar/' + f.split('/')[-1])
                 # print(f'Fetching {f}')
@@ -665,90 +746,38 @@ async def show_all(ctx):
     """
     await ctx.send("All available fetishes are listed here: http://45.248.76.3:5000/fetishes")  # https://gist.github.com/JonnoFTW/7788169e843a685e37628d9cd8a0be6b")
 
+sites = {}
+
+def load_sites():
+    with open('bom.dat') as f:
+        for line in f:
+            state, ids, location = line.split(' ', 2)
+            location = location.title().strip()
+            sites[location] = ids.split('.')
+
+load_sites()
+
+
+def get_suggestions(d, thing):
+    return ', '.join([k for k in d.keys() if distance.edit_distance(thing, k) < 3])
 
 @bot.command()
-async def weather(ctx, site="Adelaide"):
+async def weather(ctx, *, site=None):
     """
-    Weather details for adelaide
+    Weather details for selected site
     """
-    #    await ctx.send("```"+tabulate.tabulate(out, headers='keys', tablefmt='plain')+"```")
-    sites = {
-        "Adelaide": "94648",
-        "Adelaide Airport": "94672",
-        "Edinburgh": "95676",
-        "Hindmarsh Island": "94677",
-        "Kuitpo": "94683",
-        "Mount Crawford": "94678",
-        "Mount Lofty": "95678",
-        "Noarlunga": "94808",
-        "Nuriootpa": "94681",
-        "Outer Harbor (Black Pole)": "95675",
-        "Parafield": "95677",
-        "Parawa West": "94811",
-        "Sellicks Hill": "95679",
-        "Strathalbyn": "94814",
-        "Cape Borda": "95805",
-        "Cape Willoughby": "94822",
-        "Edithburgh": "94809",
-        "Kadina": "94685",
-        "Kingscote": "95807",
-        "Minlaton Airport": "95659",
-        "Parndana": "94807",
-        "Stenhouse Bay": "95806",
-        "Warburto Point": "94666",
-        "Cape Jaffa": "94813",
-        "Coonawarra": "94817",
-        "Keith West": "95815",
-        "Mount Gambier": "94821",
-        "Naracoorte": "94820",
-        "Padthaway": "95823",
-        "Robe Airport": "95816",
-        "Lameroo AWS": "94690",
-        "Loxton": "94682",
-        "Pallamana": "95818",
-        "Renmark Airport": "95687",
-        "Clare": "95667",
-        "Port Augusta": "95666",
-        "Port Pirie Airport AWS": "99749",
-        "Roseworthy": "95671",
-        "Snowtown": "95670",
-        "Ceduna": "94653",
-        "Cleve Airport": "94662",
-        "Cultana (Defence)": "95683",
-        "Cummins Airport": "95663",
-        "Kyancutta": "94657",
-        "Minnipa RS": "95662",
-        "Neptune Island": "94804",
-        "Nullarbor": "94651",
-        "Point Avoid": "95649",
-        "Port Lincoln Airport": "95661",
-        "Thevenard": "95652",
-        "Whyalla": "95664",
-        "Wudinna Airport": "95654",
-        "Arkaroola": "94676",
-        "Coober Pedy Airport": "95458",
-        "Ernabella/Pukatja": "94474",
-        "Leigh Creek": "94674",
-        "Marree Airport": "95480",
-        "Moomba Airport": "95481",
-        "Oodnadatta": "94476",
-        "Roxby Downs": "95658",
-        "Tarcoola": "94655",
-        "Woomera": "94659",
-        "Yunta": "94684"
-    }
+    if site is None:
+        site = get_guild_city(ctx, 'weather')
+
     lower_sites = {k.lower(): v for k, v in sites.items()}
-    ids_id = "60801"
     if site.lower() in lower_sites:
-        site_id = lower_sites[site.lower()]
+        ids_id, site_id = lower_sites[site.lower()]
         print("site", site, site_id)
     else:
-        suggestions = [k for k in sites.keys(
-        ) if distance.edit_distance(site, k) < 3]
-        await ctx.send(f"No such site exists. Perhaps you meant: {', '.join(suggestions)}")
+        await ctx.send(f"No such site '{site}' exists. Perhaps you meant: {get_suggestions(sites, site)}")
         return
 
-    url = f"http://www.bom.gov.au/fwo/IDS{ids_id}/IDS{ids_id}.{site_id}.json"
+    url = f"http://www.bom.gov.au/fwo/{ids_id}/{ids_id}.{site_id}.json"
     o = requests.get(url, headers=USER_AGENT).json()['observations']['data'][0]
     out = {
         #            'City': o['name'],
@@ -764,25 +793,19 @@ async def weather(ctx, site="Adelaide"):
     embed = discord.Embed(
         title=o['name'],
         colour=0x006064,
-        url=f"http://www.bom.gov.au/products/IDS{ids_id}/IDS{ids_id}.{site_id}.shtml"
+        url=f"http://www.bom.gov.au/products/{ids_id}/IDS{ids_id}.{site_id}.shtml"
     )
-    # img = requests.get("http://www.bom.gov.au/radar/IDR643.gif", headers=USER_AGENT).content
-    # print(f"Received {len(img)} bytes image")
-    # Path('radar.gif').write_bytes(img)
-    # img_buff = BytesIO(img)
-    # img_buff.seek(0)
 
-    # thumb_file = discord.File("radar.gif", filename="radar.gif")
-    # embed.set_thumbnail(url="attachment://radar.gif")
     for k, v in out.items():
         embed.add_field(name=f"**{k}**", value=f"\n{v}")
     await ctx.send(embed=embed)
 
 
 @bot.command()
-async def temps(ctx, field='air_temp', other_field=None):
+async def temps(ctx, site=None, field='air_temp', other_field=None):
     """
     Shows a chart of the recent temperatures in Adelaide
+    Specify the city name in quote marks eg. .temps "coffs harbour" apparent_t
     """
     fields = {
         "wind_spd_kmh": "Wind Speed (km/h)",
@@ -797,10 +820,30 @@ async def temps(ctx, field='air_temp', other_field=None):
         "apparent_t": "Apparent Temperature (°C)",
         "delta_t": "Wet Bulb Depression (°C)",
     }
+    
+    if site is None:
+        site = get_guild_city(ctx, 'weather')
+        
+    
+        
+    lower_sites = {k.lower(): v for k, v in sites.items()}
+    if site.lower() in lower_sites:
+        ids_id, site_id = lower_sites[site.lower()]
+        print("site", site, site_id)
+    else:
+        await ctx.send(f"No such site '{site}' exists. Perhaps you meant: {get_suggestions(sites, site)}")
+        return
 
     async with ctx.typing():
-        url = "http://reg.bom.gov.au/fwo/IDS60901/IDS60901.94648.json"
-        data = requests.get(url).json()['observations']['data']
+        url = f"http://reg.bom.gov.au/fwo/{ids_id}/{ids_id}.{site_id}.json"
+        resp = requests.get(url)
+        if not resp.ok:
+        
+            print(url)
+            await ctx.send("Something went wrong")
+            return
+        all_data = resp.json()
+        data = all_data['observations']['data']
         if field not in fields:
             await ctx.send(f"Field must be one of {', '.join(['**' + f + '**: ' + v for f, v in fields.items()])}")
             return
@@ -821,7 +864,7 @@ async def temps(ctx, field='air_temp', other_field=None):
             ax.right_ax.set_ylabel(fields[other_field])
             lines += ax.right_ax.get_lines()
         ax.legend(lines, [l.get_label() for l in lines], loc='upper left')
-        plt.title(f"{title} In Adelaide")
+        plt.title(f"{title} In {all_data['observations']['header'][0]['name']}")
         ax.xaxis.set_minor_locator(mdates.HourLocator(interval=2))
         ax.xaxis.set_minor_formatter(mdates.DateFormatter("%I %p"))
         ax.xaxis.set_major_locator(mdates.DayLocator())
@@ -941,10 +984,10 @@ async def poster(ctx, arg1="", arg2="", arg3="", *args, **kwargs):
         arg2 = await commands.clean_content(fix_channel_mentions=True, use_nicknames=True).convert(ctx, arg2)
         arg3 = await commands.clean_content(fix_channel_mentions=True, use_nicknames=True).convert(ctx, arg3)
         if kwargs.get('dall_e'):
-            im_buf, _, _, _ = await get_dall_e_img(ctx, f'{arg1}, {arg2}, {arg3} --steps 120', kwargs['dall_e'])
+            im_buf, _, _, _, _ = await get_dall_e_img(ctx, f'{arg1}, {arg2}, {arg3} --steps 120', kwargs['dall_e'])
         else:
             async with aiohttp.ClientSession() as session:
-                async with session.get("https://source.unsplash.com/random") as resp:
+                async with session.get("https://source.unsplash.com/random?nature") as resp:
                     if resp.status == 200:
                         im_buf = BytesIO(await resp.read())
         im = Image.open(im_buf)
@@ -1198,7 +1241,6 @@ async def syllables(ctx, word):
     """
     await ctx.send(f"{word} has {syllable_count(word)} syllables")
 
-dall_e_queue = asyncio.Queue()
 
 def get_dall_ep():
     client = ngrok.Client(key_store['ngrok'])
@@ -1239,6 +1281,10 @@ async def get_dall_e_img(ctx, msg, ep):
             'strength': dict(out='strength', range=[0, 1], func=float),
             'seed': dict(out='seed', range=[-np.inf, np.inf], func=int),
         }
+        ext = "jpg"
+        if 'vid' in args:
+            del args['vid']
+            ext = 'webm'
         for arg, r in arg_funcs.items():
             if arg in args:
                 try:
@@ -1277,40 +1323,18 @@ async def get_dall_e_img(ctx, msg, ep):
             kwargs = {'data': formdata}
             method = session.post
         else:
-            route = "img.jpg"
+            route = f"img.{ext}"
             kwargs = {}
             method = session.get
         async with method(f'{ep}/{route}', params=args, headers=headers, **kwargs) as resp:
             if resp.status == 200:
                 buff = BytesIO(await resp.read())
                 duration = str(round(time.time() - start_t, 2))
-                return buff, resp, args, duration
+                return buff, resp, args, duration, ext
             else:
                 resp_text = await resp.text()
                 raise DallError(f"Dall-e service returned error ({resp.status}): {resp_text}")
 
-
-async def dall_e_task():
-    while True:
-        ctx, msg, ep = await dall_e_queue.get()
-        try:
-            buff, resp, args, duration = await get_dall_e_img(ctx, msg, ep)
-            fname = "dalle.jpg"
-            buff.seek(0)
-            file = discord.File(buff, filename=fname)
-            embed = discord.Embed()
-            embed.set_image(url=f'attachment://{fname}')
-            embed.description = f"{ctx.message.author.mention}\n{args['q']}"
-            if len(args) > 1:
-                embed.add_field(name=f"Args", value=" ".join([f"{k}={v}" for k, v in args.items() if k != 'q']))
-            embed.add_field(name=f"Took", value=duration + "secs")
-            if 'X-SD-Seed' in resp.headers:
-                embed.add_field(name='Seed', value=resp.headers['X-SD-Seed'])
-            await ctx.message.reply(file=file, embed=embed)
-        except DallError:
-            await ctx.message.reply(msg)
-        finally:
-            dall_e_queue.task_done()
 
 
 @bot.command(aliases=["dream", "sd", "diffuse", "diffusion"])
@@ -1333,7 +1357,25 @@ async def dalle(ctx, *, msg):
     if not endpoint:
         await ctx.send("dream is not running")
         return
-    dall_e_queue.put_nowait((ctx, msg, endpoint))
+    try:
+        buff, resp, args, duration, ext = await get_dall_e_img(ctx, msg, endpoint)
+        fname = f"dalle.{ext}"
+        buff.seek(0)
+        file = discord.File(buff, filename=fname)
+        embed = discord.Embed()
+        embed.set_image(url=f'attachment://{fname}')
+        embed.description = f"{ctx.message.author.mention}\n{args['q']}"
+        if len(args) > 1:
+            embed.add_field(name=f"Args", value=" ".join([f"{k}={v}" for k, v in args.items() if k != 'q']))
+        embed.add_field(name=f"Took", value=duration + "secs")
+        if 'X-SD-Seed' in resp.headers:
+            embed.add_field(name='Seed', value=resp.headers['X-SD-Seed'])
+        if ext == 'webm':
+            embed = None
+        await ctx.message.reply(file=file, embed=embed)
+    except DallError as err:
+        print(str(err))
+        await ctx.message.reply("Error with service")
 
 
 @bot.command()
@@ -1401,8 +1443,9 @@ async def handle_bot_mention(message):
         if is_dm:
             is_female = random.choice([True, False])
         else:
-            is_female = 570225951657689088 in [
-                r.id for r in message.author.roles]
+            role_string = ' '.join([r.name.lower() for r in message.author.roles])
+            role_ids = [r.id for r in message.author.roles]
+            is_female = 570225951657689088 in role_ids or re.search(r'woman|girl|female|femme', role_string.lower())
         if is_female:
             name = "Mommy"
             s_name = "girl"
