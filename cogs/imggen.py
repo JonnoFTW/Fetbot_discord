@@ -167,7 +167,6 @@ class ImageConsumer(ConsumerMixin):
         ]
 
     async def on_response(self, body, message: Message):
-        print("got response message")
         result = message.payload['result']
         headers = message.payload['headers']
         buff = BytesIO(base64.b64decode(result['img_blob']))
@@ -193,9 +192,9 @@ class ImageConsumer(ConsumerMixin):
         embed = discord.Embed()
         embed.set_image(url=f'attachment://{fname}')
         embed.description = f"{discord_message.author.mention}\n{result['prompt']}"
-        args = {k: v for k, v in result.items() if k not in {'prompt', 'headers', 'img_blob', 'ext'}}
+        args = {k: v for k, v in result.items() if k not in {'prompt', 'headers', 'img_blob', 'ext', 'duration'}}
         if len(args) > 1:
-            embed.add_field(name=f"Args", value=" ".join([f"{k}={v}" for k, v in args.items() if v is not None]))
+            embed.add_field(name=f"Args", value=" ".join([f"{k}=\"{v}\"" for k, v in args.items() if v is not None]))
         await discord_message.reply(file=file, embed=embed)
 
 
@@ -278,12 +277,11 @@ class ImageGenCog(commands.Cog):
                     'X-Discord-MessageId': ctx.message.id
                 }
             args['headers'] = headers
-            args['prompt'] = args['q']
-            del args['q']
+            args['negative_prompt'] = args.get('np')
             with self.rmq_conn as connection:
                 with connection.channel() as channel:
                     producer = Producer(channel)
-                    print("publishing image request on queue:", self.image_results.name, args)
+                    # print("publishing image request on queue:", self.image_results.name, args)
                     producer.publish(
                         args,
                         queue=self.image_requests,
@@ -297,6 +295,7 @@ class ImageGenCog(commands.Cog):
         """
         will generate an image from prompt, if you upload an image, it will be generated on that
         Extra arguments are:
+          --np    : negative prompt, will make sure this prompt is not in the output
           --steps : number of steps of refinement, 10 is fast, 50 is okay, 150 is great
           --scale : adherence to the prompt, 7.5 is good
           --H     : height in pixels
