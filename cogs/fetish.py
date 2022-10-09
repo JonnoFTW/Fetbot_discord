@@ -11,6 +11,7 @@ from nltk.metrics import distance
 import seaborn as sns
 import numpy as np
 import matplotlib.pylab as plt
+import matplotlib.font_manager as fm
 
 with open('fetishes.json', 'r') as fh:
     fetishes = json.load(fh)
@@ -60,6 +61,9 @@ class FetishCog(commands.Cog):
         """
         Show a table of kink compatability scores
         """
+        sns.set(rc={
+            'font.family': ['Noto Sans CJK KR', 'sans-serif', 'Noto Sans', 'Noto Emoji', 'Noto Sans CJK JP', 'sans-serif']
+        })
         data = await self.bot.get_db()
         for k in list(data.keys()):
             if not k.isdigit() or ctx.guild.get_member(int(k)) is None:
@@ -75,11 +79,11 @@ class FetishCog(commands.Cog):
                 row.append(iou(data[x], data[y]))
             tbl.append(row)
         # oldcmap = 'YlGnBu'
-        arry = np.array(tbl)
+        arry = np.array(tbl) * 100
         mask = np.zeros_like(arry, dtype=np.bool)
         mask[np.triu_indices_from(mask)] = True
         ax = plt.subplot()
-        sns.heatmap(arry, annot=True, linewidth=0.5, cmap="cool",  # fontdict={'fontname': 'NotoEmoji-merged'},
+        sns.heatmap(arry, annot=True, linewidth=0.5, cmap="cool",
                     xticklabels=users, yticklabels=users, square=True, mask=mask, ax=ax)
         # for text_obj in ax.get_xticklabels():
         #    text_obj.set_fontname('Uni Sans')
@@ -87,8 +91,7 @@ class FetishCog(commands.Cog):
         #    text_obj.set_fontname('Uni Sans')
         ax.set_title(
             r"Kink Kompatibility $\left( \frac{A \cap B}{A \cup B} \right)$")
-        ax.set_yticklabels(ax.get_yticklabels(), rotation=45,
-                           verticalalignment='center')
+        ax.set_yticklabels(ax.get_yticklabels(), rotation=45, verticalalignment='center')
         buff = BytesIO()
         plt.savefig(buff, format='png')
         buff.seek(0)
