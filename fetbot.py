@@ -4,6 +4,7 @@ import asyncio
 import csv
 import json
 import re
+import threading
 from datetime import datetime
 from pathlib import Path
 
@@ -48,7 +49,6 @@ bot.twitter_api = twitter.Api(
     key_store['access_token_key'],
     key_store['access_token_secret']
 )
-
 
 plt.rcParams['font.family'] = 'sans-serif'
 plt.rcParams['font.sans-serif'] = [
@@ -139,7 +139,6 @@ async def on_message(message):
         except:
             print("failed to kick", message.author)
         return
-
 
 
 extensions = [
