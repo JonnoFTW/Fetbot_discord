@@ -22,8 +22,6 @@ class GladiatorsCog(commands.Cog):
         }
 
     def get_gladiators(self, exclude=[]):
-        print("gladiators adl_guild_id", self.bot.ADL_GUILD_ID, self.bot.get_guild(self.bot.ADL_GUILD_ID))
-
         role = utils.get(self.bot.get_guild(self.bot.ADL_GUILD_ID).roles, name='Gladiator')
         return [m for m in role.members if m.id not in exclude]
 

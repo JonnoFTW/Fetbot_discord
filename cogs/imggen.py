@@ -1,5 +1,7 @@
+import base64
 import json
 import re
+import threading
 import time
 import traceback
 from glob import glob
@@ -7,15 +9,22 @@ from io import BytesIO
 
 import aiohttp
 import discord
+import discord.ext.commands
 import ngrok
 import numpy as np
+
+from kombu import Connection, Exchange, Queue, Consumer, Producer, Message
+
 from discord.ext import commands
+
 from PIL import Image, ImageFont, ImageDraw, ImageFilter
 from colormath.color_conversions import convert_color
 from colormath.color_diff import delta_e_cie2000
 from colormath.color_objects import sRGBColor, LabColor
 
 from emoji import get_emoji_regexp
+from kombu.asynchronous import Hub
+from kombu.mixins import ConsumerMixin
 
 from sklearn.cluster import KMeans
 
@@ -39,10 +48,8 @@ def hex2rgb(s):
     return tuple(int(h[i:i + 2], 16) for i in (0, 2, 4))
 
 
-emo_re = get_emoji_regexp()
-
-
 def fit_text(txt, draw, font_path, imwidth, size=128, padding=32):
+    emo_re = get_emoji_regexp()
     print("txt has emoji: ", emo_re.search(txt), txt)
     while 1:
         if emo_re.search(txt):
@@ -139,42 +146,105 @@ class DallError(Exception):
     pass
 
 
+class ImageConsumer(ConsumerMixin):
+
+    def __init__(self, connection: Connection, queue, bot: commands.Bot):
+        super().__init__()
+        self.connection = connection
+        self.queue = queue
+        self.bot = bot
+
+    def get_consumers(self, Consumer, channel):
+        def do_response(body, message):
+            loop = self.bot.loop
+            loop.create_task(self.on_response(body, message))
+
+        return [
+            Consumer(
+                queues=[self.queue],
+                callbacks=[do_response]
+            )
+        ]
+
+    async def on_response(self, body, message: Message):
+        print("got response message")
+        result = message.payload['result']
+        headers = message.payload['headers']
+        buff = BytesIO(base64.b64decode(result['img_blob']))
+        ext = result['ext']
+
+        message.ack()
+        if headers['X-Discord-Server'] == 'DM':
+            src = self.bot.get_user(int(headers['X-Discord-UserId']))  # type: discord.TextChannel
+            if src is None:
+                print("no such user", headers['X-Discord-UserId'])
+                return
+        else:
+            src = self.bot.get_channel(int(headers['X-Discord-ChannelId']))  # type: discord.TextChannel
+            if not src:
+                print("could not get channel", headers['X-Discord-ChannelId'])
+        discord_message = await src.fetch_message(int(headers['X-Discord-MessageId']))
+        if not discord_message:
+            print("No such message")
+            return
+
+        fname = f"dalle.{ext}"
+        file = discord.File(buff, filename=fname)
+        embed = discord.Embed()
+        embed.set_image(url=f'attachment://{fname}')
+        embed.description = f"{discord_message.author.mention}\n{result['prompt']}"
+        args = {k: v for k, v in result.items() if k not in {'prompt', 'headers', 'img_blob', 'ext'}}
+        if len(args) > 1:
+            embed.add_field(name=f"Args", value=" ".join([f"{k}={v}" for k, v in args.items() if v is not None]))
+        await discord_message.reply(file=file, embed=embed)
+
+
 class ImageGenCog(commands.Cog):
     poster_chance = 0.02
 
-    def __init__(self, bot):
+    def __init__(self, bot: discord.ext.commands.Bot):
         self.bot = bot
+        self.exchange = Exchange('image_gen', durable=True, auto_delete=False)
+        self.image_requests = Queue('image_requests', durable=True, exchange=self.exchange, routing_key='req', auto_delete=False)
+        self.image_results = Queue('image_results', durable=True, exchange=self.exchange, routing_key='res', auto_delete=False)
+        self.thread = threading.Thread(
+            target=self.run_image_consumer
+        )
+        self.thread.start()
 
-    def get_dall_ep(self):
-        client = ngrok.Client(self.bot.key_store['ngrok'])
-        for tn in client.tunnels.list():
-            if tn.metadata == "dall-e":
-                return tn.public_url
-        return None
+    @property
+    def rmq_conn(self):
+        return Connection(self.bot.key_store['broker_url'])
 
-    async def get_dall_e_img(self, ctx, msg, ep):
+    def run_image_consumer(self):
+        time.sleep(3)
+        worker = ImageConsumer(self.rmq_conn, self.image_results, self.bot)
+        print("ImageGen listening for rabbitmq results")
+        worker.run()
+
+    async def get_dall_e_img(self, ctx, msg):
         """
         Return a buffer with the generated image
         ctx: discord message context
         msg: the message
-        ep: the endpoint to call
         """
         async with aiohttp.ClientSession() as session:
-            parts = re.split(r"--([A-Za-z]+)", ("--q " if "--q" not in msg else "") + msg)[1:]
+            parts = re.split(r"--([A-Za-z]+)", ("--prompt " if "--prompt" not in msg else "") + msg)[1:]
             args = dict(zip(parts[0::2], [x.strip() for x in parts[1::2]]))
             err = False
             arg_funcs = {
-                'steps': dict(out='ddim_steps', range=[1, 200], func=int),
-                'W': dict(out='W', range=[64, 728], func=int),
-                'H': dict(out='H', range=[64, 728], func=int),
+                'steps': dict(out='steps', range=[1, 200], func=int),
+                'W': dict(out='height', range=[64, 728], func=int),
+                'H': dict(out='width', range=[64, 728], func=int),
                 'scale': dict(out='scale', range=[1, 64], func=float),
                 'strength': dict(out='strength', range=[0, 1], func=float),
                 'seed': dict(out='seed', range=[-np.inf, np.inf], func=int),
             }
-            ext = "jpg"
             if 'vid' in args:
+                await ctx.message.reply("video output not support yet")
                 del args['vid']
                 ext = 'webm'
+                return
             for arg, r in arg_funcs.items():
                 if arg in args:
                     try:
@@ -194,7 +264,8 @@ class ImageGenCog(commands.Cog):
                     'X-Discord-User': ctx.message.author.name,
                     'X-Discord-UserId': str(ctx.message.author.id),
                     'X-Discord-Server': 'DM',
-                    'X-Discord-Channel': 'DM'
+                    'X-Discord-Channel': 'DM',
+                    'X-Discord-MessageId': ctx.message.id
                 }
             else:
                 headers = {
@@ -203,27 +274,23 @@ class ImageGenCog(commands.Cog):
                     'X-Discord-Server': ctx.message.guild.name,
                     'X-Discord-ServerId': str(ctx.message.guild.id),
                     'X-Discord-Channel': ctx.channel.name,
-                    'X-Discord-ChannelId': str(ctx.channel.id)
+                    'X-Discord-ChannelId': str(ctx.channel.id),
+                    'X-Discord-MessageId': ctx.message.id
                 }
-            start_t = int(time.time())
-            if len(ctx.message.attachments) > 0:
-                route = "img2img.jpg"
-                formdata = aiohttp.FormData()
-                formdata.add_field('file', BytesIO(await ctx.message.attachments[0].read()), filename='image.jpg')
-                kwargs = {'data': formdata}
-                method = session.post
-            else:
-                route = f"img.{ext}"
-                kwargs = {}
-                method = session.get
-            async with method(f'{ep}/{route}', params=args, headers=headers, **kwargs) as resp:
-                if resp.status == 200:
-                    buff = BytesIO(await resp.read())
-                    duration = str(round(time.time() - start_t, 2))
-                    return buff, resp, args, duration, ext
-                else:
-                    resp_text = await resp.text()
-                    raise DallError(f"Dall-e service returned error ({resp.status}): {resp_text}")
+            args['headers'] = headers
+            args['prompt'] = args['q']
+            del args['q']
+            with self.rmq_conn as connection:
+                with connection.channel() as channel:
+                    producer = Producer(channel)
+                    print("publishing image request on queue:", self.image_results.name, args)
+                    producer.publish(
+                        args,
+                        queue=self.image_requests,
+                        exchange=self.exchange,
+                        routing_key='req',
+                        serializer='json'
+                    )
 
     @commands.command(aliases=["dream", "sd", "diffuse", "diffusion"])
     async def dalle(self, ctx, *, msg):
@@ -241,29 +308,24 @@ class ImageGenCog(commands.Cog):
         if not msg:
             await ctx.send("You must provide a prompt, see `.sd --help` for more")
             return
-        endpoint = self.get_dall_ep()
-        if not endpoint:
-            await ctx.send("dream is not running")
-            return
-        try:
-            buff, resp, args, duration, ext = await self.get_dall_e_img(ctx, msg, endpoint)
-            fname = f"dalle.{ext}"
-            buff.seek(0)
-            file = discord.File(buff, filename=fname)
-            embed = discord.Embed()
-            embed.set_image(url=f'attachment://{fname}')
-            embed.description = f"{ctx.message.author.mention}\n{args['q']}"
-            if len(args) > 1:
-                embed.add_field(name=f"Args", value=" ".join([f"{k}={v}" for k, v in args.items() if k != 'q']))
-            embed.add_field(name=f"Took", value=duration + "secs")
-            if 'X-SD-Seed' in resp.headers:
-                embed.add_field(name='Seed', value=resp.headers['X-SD-Seed'])
-            if ext == 'webm':
-                embed = None
-            await ctx.message.reply(file=file, embed=embed)
-        except DallError as err:
-            print(str(err))
-            await ctx.message.reply("Error with service")
+        await self.get_dall_e_img(ctx, msg)
+        #     fname = f"dalle.{ext}"
+        #     buff.seek(0)
+        #     file = discord.File(buff, filename=fname)
+        #     embed = discord.Embed()
+        #     embed.set_image(url=f'attachment://{fname}')
+        #     embed.description = f"{ctx.message.author.mention}\n{args['q']}"
+        #     if len(args) > 1:
+        #         embed.add_field(name=f"Args", value=" ".join([f"{k}={v}" for k, v in args.items() if k != 'q']))
+        #     embed.add_field(name=f"Took", value=duration + "secs")
+        #     if 'X-SD-Seed' in resp.headers:
+        #         embed.add_field(name='Seed', value=resp.headers['X-SD-Seed'])
+        #     if ext == 'webm':
+        #         embed = None
+        #     await ctx.message.reply(file=file, embed=embed)
+        # except DallError as err:
+        #     print(str(err))
+        #     await ctx.message.reply("Error with service")
 
     @commands.command(name='poster')
     async def poster(self, ctx, arg1="", arg2="", arg3="", *args, **kwargs):
@@ -285,9 +347,9 @@ class ImageGenCog(commands.Cog):
             arg1 = await commands.clean_content(fix_channel_mentions=True, use_nicknames=True).convert(ctx, arg1)
             arg2 = await commands.clean_content(fix_channel_mentions=True, use_nicknames=True).convert(ctx, arg2)
             arg3 = await commands.clean_content(fix_channel_mentions=True, use_nicknames=True).convert(ctx, arg3)
-            is_haiku = kwargs.get('dall_e')
+            is_haiku = 0 # kwargs.get('dall_e')
             if is_haiku:
-                im_buf, _, _, _, _ = await self.get_dall_e_img(ctx, f'{arg1}, {arg2}, {arg3} --steps 120', self.get_dall_ep())
+                im_buf, _, _, _, _ = await self.get_dall_e_img(ctx, f'{arg1}, {arg2}, {arg3} --steps 120', True)
             else:
                 async with aiohttp.ClientSession() as session:
                     async with session.get("https://source.unsplash.com/random?nature") as resp:

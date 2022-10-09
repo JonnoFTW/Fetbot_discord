@@ -49,7 +49,7 @@ class AdminCog(commands.Cog):
                 print('Unable to access', channel.name)
         print(f"Cleaned up {count} messages")
 
-    @commands.command()
+    @commands.command(hidden=True)
     @commands.is_owner()
     async def nazi(self, ctx, s):
         """
@@ -119,6 +119,7 @@ class AdminCog(commands.Cog):
     @commands.is_owner()
     async def reload(self, ctx, cog: str):
         self.bot.reload_extension(f"cogs.{cog}")
+        await ctx.message.channel.send(f"Reloaded {cog}")
 
 
 def setup(ctx):
