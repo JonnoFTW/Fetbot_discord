@@ -1,19 +1,20 @@
 import base64
 import json
+import pathlib
 import re
 import threading
 import time
 import traceback
+from functools import cached_property
 from glob import glob
 from io import BytesIO
 
 import aiohttp
 import discord
 import discord.ext.commands
-import ngrok
 import numpy as np
 
-from kombu import Connection, Exchange, Queue, Consumer, Producer, Message
+from kombu import Connection, Exchange, Queue, Producer, Message
 
 from discord.ext import commands
 
@@ -23,7 +24,6 @@ from colormath.color_diff import delta_e_cie2000
 from colormath.color_objects import sRGBColor, LabColor
 
 from emoji import get_emoji_regexp
-from kombu.asynchronous import Hub
 from kombu.mixins import ConsumerMixin
 
 from sklearn.cluster import KMeans
@@ -69,8 +69,9 @@ def fit_text(txt, draw, font_path, imwidth, size=128, padding=32):
             size = size - 2
 
 
-with open('colours.json', 'r') as infile:
+with (pathlib.Path(__file__).parent.parent / 'colours.json').open('r') as infile:
     colours = json.load(infile)
+
 all_colours = []
 for br in colours.values():
     for col_list in br.values():
@@ -182,6 +183,7 @@ class ImageConsumer(ConsumerMixin):
             src = self.bot.get_channel(int(headers['X-Discord-ChannelId']))  # type: discord.TextChannel
             if not src:
                 print("could not get channel", headers['X-Discord-ChannelId'])
+                return
         discord_message = await src.fetch_message(int(headers['X-Discord-MessageId']))
         if not discord_message:
             print("No such message")
@@ -205,20 +207,26 @@ class ImageGenCog(commands.Cog):
         self.bot = bot
         self.exchange = Exchange('image_gen', durable=True, auto_delete=False)
         self.image_requests = Queue('image_requests', durable=True, exchange=self.exchange, routing_key='req', auto_delete=False)
-        self.image_results = Queue('image_results', durable=True, exchange=self.exchange, routing_key='res', auto_delete=False)
+
+    @property
+    def rmq_conn(self):
+        print("Making connection to", self.bot.key_store['broker_url'])
+        return Connection(self.bot.key_store['broker_url'], connect_timeout=5, heartbeat=5)
+
+    @property
+    def bot_id(self):
+        return self.bot.user.id
+
+    @commands.Cog.listener("on_ready")
+    async def on_ready(self):
         self.thread = threading.Thread(
             target=self.run_image_consumer
         )
         self.thread.start()
 
-    @property
-    def rmq_conn(self):
-        return Connection(self.bot.key_store['broker_url'])
-
     def run_image_consumer(self):
-        time.sleep(3)
-        worker = ImageConsumer(self.rmq_conn, self.image_results, self.bot)
-        print("ImageGen listening for rabbitmq results")
+        image_results = Queue(f'image_results-{self.bot_id}', durable=True, exchange=self.exchange, routing_key=f'res-{self.bot_id}', auto_delete=False)
+        worker = ImageConsumer(self.rmq_conn, image_results, self.bot)
         worker.run()
 
     async def get_dall_e_img(self, ctx, msg):
@@ -227,68 +235,70 @@ class ImageGenCog(commands.Cog):
         ctx: discord message context
         msg: the message
         """
-        async with aiohttp.ClientSession() as session:
-            parts = re.split(r"--([A-Za-z]+)", ("--prompt " if "--prompt" not in msg else "") + msg)[1:]
-            args = dict(zip(parts[0::2], [x.strip() for x in parts[1::2]]))
-            err = False
-            arg_funcs = {
-                'steps': dict(out='steps', range=[1, 200], func=int),
-                'W': dict(out='height', range=[64, 728], func=int),
-                'H': dict(out='width', range=[64, 728], func=int),
-                'scale': dict(out='scale', range=[1, 64], func=float),
-                'strength': dict(out='strength', range=[0, 1], func=float),
-                'seed': dict(out='seed', range=[-np.inf, np.inf], func=int),
+        parts = re.split(r"--([A-Za-z]+)", ("--prompt " if "--prompt" not in msg else "") + msg)[1:]
+        args = dict(zip(parts[0::2], [x.strip() for x in parts[1::2]]))
+        err = False
+        arg_funcs = {
+            'steps': dict(out='steps', range=[1, 200], func=int),
+            'H': dict(out='height', range=[64, 728], func=int),
+            'W': dict(out='width', range=[64, 728], func=int),
+            'scale': dict(out='scale', range=[1, 64], func=float),
+            'strength': dict(out='strength', range=[0, 1], func=float),
+            'seed': dict(out='seed', range=[-np.inf, np.inf], func=int),
+        }
+        if 'vid' in args:
+            await ctx.message.reply("video output not support yet")
+            del args['vid']
+            ext = 'webm'
+            return
+        for arg, r in arg_funcs.items():
+            if arg in args:
+                try:
+                    val = r['func'](args[arg])
+                    if not r['range'][0] <= val <= r['range'][1]:
+                        raise Exception()
+                    del args[arg]
+                    args[r['out']] = val
+                except:
+                    await ctx.send(f"Arg {arg} must be a {r['func'].__name__} in range {r['range']}, got {args[arg]}\nargs={args}")
+                    err = True
+                    break
+        if err:
+            raise ValueError("Bad args")
+        if isinstance(ctx.channel, discord.channel.DMChannel):
+            headers = {
+                'X-Discord-User': ctx.message.author.name,
+                'X-Discord-UserId': str(ctx.message.author.id),
+                'X-Discord-Server': 'DM',
+                'X-Discord-Channel': 'DM',
+                'X-Discord-MessageId': ctx.message.id
             }
-            if 'vid' in args:
-                await ctx.message.reply("video output not support yet")
-                del args['vid']
-                ext = 'webm'
-                return
-            for arg, r in arg_funcs.items():
-                if arg in args:
-                    try:
-                        val = r['func'](args[arg])
-                        if not r['range'][0] <= val <= r['range'][1]:
-                            raise Exception()
-                        del args[arg]
-                        args[r['out']] = val
-                    except:
-                        await ctx.send(f"Arg {arg} must be a {r['func'].__name__} in range {r['range']}, got {args[arg]}\nargs={args}")
-                        err = True
-                        break
-            if err:
-                raise ValueError("Bad args")
-            if isinstance(ctx.channel, discord.channel.DMChannel):
-                headers = {
-                    'X-Discord-User': ctx.message.author.name,
-                    'X-Discord-UserId': str(ctx.message.author.id),
-                    'X-Discord-Server': 'DM',
-                    'X-Discord-Channel': 'DM',
-                    'X-Discord-MessageId': ctx.message.id
-                }
-            else:
-                headers = {
-                    'X-Discord-User': ctx.message.author.display_name,
-                    'X-Discord-UserId': str(ctx.message.author.id),
-                    'X-Discord-Server': ctx.message.guild.name,
-                    'X-Discord-ServerId': str(ctx.message.guild.id),
-                    'X-Discord-Channel': ctx.channel.name,
-                    'X-Discord-ChannelId': str(ctx.channel.id),
-                    'X-Discord-MessageId': ctx.message.id
-                }
-            args['headers'] = headers
-            args['negative_prompt'] = args.get('np')
-            with self.rmq_conn as connection:
-                with connection.channel() as channel:
-                    producer = Producer(channel)
-                    # print("publishing image request on queue:", self.image_results.name, args)
-                    producer.publish(
-                        args,
-                        queue=self.image_requests,
-                        exchange=self.exchange,
-                        routing_key='req',
-                        serializer='json'
-                    )
+        else:
+            headers = {
+                'X-Discord-User': ctx.message.author.display_name,
+                'X-Discord-UserId': str(ctx.message.author.id),
+                'X-Discord-Server': ctx.message.guild.name,
+                'X-Discord-ServerId': str(ctx.message.guild.id),
+                'X-Discord-Channel': ctx.channel.name,
+                'X-Discord-ChannelId': str(ctx.channel.id),
+                'X-Discord-MessageId': ctx.message.id
+            }
+        args['headers'] = headers
+        args['negative_prompt'] = args.get('np')
+        with self.rmq_conn as connection:
+            with connection.channel() as channel:
+                producer = Producer(channel)
+                # print(f"publishing request on {self.image_requests} with return-key=res-{self.bot_id}")
+                producer.publish(
+                    args,
+                    queue=self.image_requests,
+                    exchange=self.exchange,
+                    routing_key='req',
+                    serializer='json',
+                    headers={
+                        'return-key': f'res-{self.bot_id}'
+                    }
+                )
 
     @commands.command(aliases=["dream", "sd", "diffuse", "diffusion"])
     async def dalle(self, ctx, *, msg):
