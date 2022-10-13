@@ -1,4 +1,5 @@
 import json
+import pathlib
 import time
 from datetime import datetime
 from ftplib import FTP
@@ -17,7 +18,7 @@ from nltk.metrics import distance
 
 sites = {}
 
-with open('bom.dat') as f:
+with (pathlib.Path(__file__).parent.parent / 'bom.dat').open('r') as f:
     for line in f:
         state, ids, location = line.split(' ', 2)
         location = location.title().strip()
@@ -25,11 +26,11 @@ with open('bom.dat') as f:
 
 
 def get_suggestions(d, thing):
-    return ', '.join([k for k in d.keys() if distance.edit_distance(thing, k) < 3])
+    return ', '.join([k for k in d.keys() if distance.edit_distance(thing, k) < 5])
 
 
 def get_guild_city(ctx, key):
-    default = {'radar': 'Adelaide (Buckland Park)', 'weather': 'adelaide'}
+    default = {'radar': 'Adelaide', 'weather': 'adelaide'}
     with open('cities.json') as in_file:
         data = json.load(in_file)
         return data.get(str(ctx.guild.id), default)[key]
@@ -168,47 +169,47 @@ class WeatherCog(commands.Cog):
     async def bom(self, ctx, *, site=None):
         radars = {
             "Brewarrina": "IDR933",
-            "Canberra (Captains Flat)": "IDR403",
+            "Canberra": "IDR403",
             "Grafton": "IDR283",
             "Hillston": "IDR943",
             "Moree": "IDR533",
-            "Namoi (Blackjack Mountain)": "IDR693",
+            "Namoi": "IDR693",
             "Newcastle": "IDR043",
             "Norfolk Island": "IDR623",
             "Sydney": "IDR713",
             "Wagga Wagga": "IDR553",
-            "Wollongong (Appin)": "IDR033",
+            "Wollongong": "IDR033",
             "Yeoval": "IDR963",
             "Alice Springs": "IDR253",
-            "Darwin (Berrimah)": "IDR633",
+            "Darwin": "IDR633",
             "Gove": "IDR093",
-            "Katherine (Tindal)": "IDR423",
+            "Katherine": "IDR423",
             "Warruwi": "IDR773",
             "Bowen": "IDR243",
-            "Brisbane (Mt Stapylton)": "IDR663",
+            "Brisbane": "IDR663",
             "Cairns": "IDR193",
             "Emerald": "IDR723",
             "Gladstone": "IDR233",
             "Greenvale": "IDR743",
-            "Gympie (Mt Kanigan)": "IDR083",
+            "Gympie": "IDR083",
             "Longreach": "IDR563",
             "Mackay": "IDR223",
             "Marburg": "IDR503",
             "Mornington Island": "IDR363",
             "Mount Isa": "IDR753",
             "Taroom": "IDR983",
-            "Townsville (Hervey Range)": "IDR733",
+            "Townsville": "IDR733",
             "Warrego": "IDR673",
             "Weipa": "IDR783",
             "Willis Island": "IDR413",
-            "Adelaide (Buckland Park)": "IDR643",
+            "Adelaide": "IDR643",
             "Adelaide (Sellicks Hill)": "IDR463",
             "Ceduna": "IDR333",
             "Mt Gambier": "IDR143",
             "Woomera": "IDR273",
             "Hobart (Mt Koonya)": "IDR763",
-            "Hobart Airport": "IDR373",
-            "N.W. Tasmania (West Takone)": "IDR523",
+            "Hobart": "IDR373",
+            "N.W. Tasmania": "IDR523",
             "Bairnsdale": "IDR683",
             "Melbourne": "IDR023",
             "Mildura": "IDR973",
@@ -225,7 +226,7 @@ class WeatherCog(commands.Cog):
             "Kalgoorlie": "IDR483",
             "Learmonth": "IDR293",
             "Newdegate": "IDR383",
-            "Perth (Serpentine)": "IDR703",
+            "Perth": "IDR703",
             "Port Hedland": "IDR163",
             "South Doodlakine": "IDR583",
             "Watheroo": "IDR793",
@@ -240,8 +241,9 @@ class WeatherCog(commands.Cog):
             if site not in radars:
                 await ctx.send(f'No such radar site {site}. Perhaps you meant: {get_suggestions(radars, site)}')
                 return
-
-        rid = radars.get(site, radars['Adelaide (Buckland Park)'])
+        if site is None:
+            site = 'Adelaide'
+        rid = radars.get(site, radars['Adelaide'])
         prefix = "http://www.bom.gov.au/products/radar_transparencies/"
         fnames = ["IDR.legend.0.png", f"{rid}.background.png",
                   f"{rid}.topography.png", f"{rid}.range.png", f"{rid}.locations.png"]
@@ -292,10 +294,14 @@ class WeatherCog(commands.Cog):
                     draw.text((x, y), text, fill=(255, 255, 255), font=font)
                     images.append(new_frame)
                     # p.unlink()
+            if len(images) <= 1:
+                await ctx.send(f"{site} might be out of service: http://www.bom.gov.au/products/{rid}.loop.shtml")
+                return
             images[0].save(out_name, append_images=images[1:],
                            duration=500, loop=0, save_all=True, optimize=True, disposal=1, include_color_table=True)
             file = discord.File(out_name)
             embed = discord.Embed()
+            embed.title = f"BOM Radar for {site}"
             embed.set_image(url=f'attachment://{out_name}')
             await ctx.send(file=file, embed=embed)
             self.cleanup()
