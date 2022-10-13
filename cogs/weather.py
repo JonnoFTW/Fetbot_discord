@@ -165,6 +165,13 @@ class WeatherCog(commands.Cog):
             embed.set_image(url=f'attachment://{fname}')
             await ctx.send(file=file, embed=embed)
 
+    @property
+    def img_dir(self):
+        _img_dir = Path(__file__).parent.parent / "images"
+        if not _img_dir.exists():
+            _img_dir.mkdir(exist_ok=True)
+        return _img_dir
+
     @commands.command()
     async def bom(self, ctx, *, site=None):
         radars = {
@@ -247,11 +254,11 @@ class WeatherCog(commands.Cog):
         prefix = "http://www.bom.gov.au/products/radar_transparencies/"
         fnames = ["IDR.legend.0.png", f"{rid}.background.png",
                   f"{rid}.topography.png", f"{rid}.range.png", f"{rid}.locations.png"]
-        out_name = 'radar_animated.gif'
+        img_dir = self.img_dir
         async with ctx.typing():
             image = None
             for f in fnames:
-                p = Path(f)
+                p = img_dir / Path(f)
                 if not p.exists():
                     res = requests.get(f"{prefix}{f}", headers=self.bot.USER_AGENT)
                     p.write_bytes(res.content)
@@ -273,7 +280,9 @@ class WeatherCog(commands.Cog):
                 prefix = '/anon/gen/radar'
                 rain_frames = [f for f in ftp.nlst(prefix) if f'{rid}.T' in f]
                 for f in rain_frames:
-                    p = Path('radar/' + f.split('/')[-1])
+                    radar_folder = img_dir / Path('radar/')
+                    radar_folder.mkdir(exist_ok=True)
+                    p = img_dir / Path('radar/' + f.split('/')[-1])
                     # print(f'Fetching {f}')
                     if not p.exists():
                         with p.open('wb') as radar_frame_f:
@@ -297,9 +306,12 @@ class WeatherCog(commands.Cog):
             if len(images) <= 1:
                 await ctx.send(f"{site} might be out of service: http://www.bom.gov.au/products/{rid}.loop.shtml")
                 return
-            images[0].save(out_name, append_images=images[1:],
-                           duration=500, loop=0, save_all=True, optimize=True, disposal=1, include_color_table=True)
-            file = discord.File(out_name)
+            buff = BytesIO()
+            images[0].save(buff, append_images=images[1:],
+                           duration=500, loop=0, save_all=True, optimize=True, disposal=1, include_color_table=True, format='gif')
+            buff.seek(0)
+            out_name = 'radar_animated.gif'
+            file = discord.File(buff, filename=out_name)
             embed = discord.Embed()
             embed.title = f"BOM Radar for {site}"
             embed.set_image(url=f'attachment://{out_name}')
@@ -307,7 +319,7 @@ class WeatherCog(commands.Cog):
             self.cleanup()
 
     def cleanup(self):
-        for p in Path('radar/').glob('*.png'):
+        for p in (self.img_dir / Path('radar/')).glob('*.png'):
             if (time.time() - p.stat().st_ctime) > 3600:
                 p.unlink()
 
