@@ -4,6 +4,7 @@ import time
 from io import BytesIO
 import random
 import re
+import pathlib
 
 import discord
 from discord.ext import commands
@@ -11,9 +12,9 @@ from nltk.metrics import distance
 import seaborn as sns
 import numpy as np
 import matplotlib.pylab as plt
-import matplotlib.font_manager as fm
 
-with open('fetishes.json', 'r') as fh:
+
+with (pathlib.Path(__file__).parent.parent / 'fetishes.json').open('r') as fh:
     fetishes = json.load(fh)
 
 
